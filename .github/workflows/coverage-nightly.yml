@@ -46,32 +46,32 @@ jobs:
           fi
 
           if ! python3 - <<'PY'
-import json
-import pathlib
+          import json
+          import pathlib
 
-policy_path = pathlib.Path('coverage-policy.json')
-with policy_path.open() as f:
-    policy = json.load(f)
+          policy_path = pathlib.Path('coverage-policy.json')
+          with policy_path.open() as f:
+              policy = json.load(f)
 
-for candidate in ['coverage.json', 'coverage-summary.json', '.coverage/report.json']:
-    path = pathlib.Path(candidate)
-    if path.exists():
-        report_path = path
-        break
-else:
-    raise SystemExit('No coverage report file found for policy enforcement.')
+          for candidate in ['coverage.json', 'coverage-summary.json', '.coverage/report.json']:
+              path = pathlib.Path(candidate)
+              if path.exists():
+                  report_path = path
+                  break
+          else:
+              raise SystemExit('No coverage report file found for policy enforcement.')
 
-with report_path.open() as f:
-    report = json.load(f)
+          with report_path.open() as f:
+              report = json.load(f)
 
-pct = report.get('coverage_percent') or report.get('total', {}).get('coverage_percent')
-if pct is None:
-    raise SystemExit(f'Could not read total coverage from {report_path}')
+          pct = report.get('coverage_percent') or report.get('total', {}).get('coverage_percent')
+          if pct is None:
+              raise SystemExit(f'Could not read total coverage from {report_path}')
 
-min_pct = policy.get('minimum_coverage_percent', 0)
-if pct < min_pct:
-    raise SystemExit(f'Coverage policy violation: {pct} < {min_pct}')
-PY
+          min_pct = policy.get('minimum_coverage_percent', 0)
+          if pct < min_pct:
+              raise SystemExit(f'Coverage policy violation: {pct} < {min_pct}')
+          PY
           then
             exit 1
           fi
