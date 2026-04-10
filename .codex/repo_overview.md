@@ -108,6 +108,7 @@ It combines shared provider contracts, deterministic pack and catalog generation
   - **Role:** Nightly coverage enforcement.
   - **Key functionality:**
     - Runs `greentic-dev coverage` and enforces `coverage-policy.json`.
+    - Reads the LLVM coverage export from `target/coverage/coverage.json` and applies the repo's `global.line_coverage_min` threshold.
 
 - **Path:** `docs/`
   - **Role:** Architecture and provider documentation.
@@ -141,6 +142,10 @@ It combines shared provider contracts, deterministic pack and catalog generation
 - **Location:** `ci/publish_oci_artifacts.sh`, `.github/workflows/publish.yml`
   - **Evidence:** OCI publication depends on GHCR credentials and ORAS availability during tagged releases.
   - **Likely cause / nature of issue:** The repository now automates OCI publication, but success still depends on GitHub release permissions and the external registry being available at release time.
+
+- **Location:** `.github/workflows/coverage-nightly.yml`
+  - **Evidence:** Coverage enforcement depends on the report location and JSON shape emitted by `greentic-dev coverage`.
+  - **Likely cause / nature of issue:** The workflow has been aligned to the current `target/coverage/coverage.json` output and LLVM coverage JSON structure, but changes in upstream report format would require another workflow adjustment.
 
 - **Location:** `tests/perf_scaling.rs`
   - **Evidence:** Scaling thresholds are intentionally permissive.

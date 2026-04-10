@@ -53,7 +53,12 @@ jobs:
           with policy_path.open() as f:
               policy = json.load(f)
 
-          for candidate in ['coverage.json', 'coverage-summary.json', '.coverage/report.json']:
+          for candidate in [
+              'target/coverage/coverage.json',
+              'coverage.json',
+              'coverage-summary.json',
+              '.coverage/report.json',
+          ]:
               path = pathlib.Path(candidate)
               if path.exists():
                   report_path = path
@@ -64,11 +69,19 @@ jobs:
           with report_path.open() as f:
               report = json.load(f)
 
-          pct = report.get('coverage_percent') or report.get('total', {}).get('coverage_percent')
+          pct = (
+              report.get('coverage_percent')
+              or report.get('total', {}).get('coverage_percent')
+              or report.get('totals', {}).get('lines', {}).get('percent')
+          )
           if pct is None:
               raise SystemExit(f'Could not read total coverage from {report_path}')
 
-          min_pct = policy.get('minimum_coverage_percent', 0)
+          min_pct = (
+              policy.get('minimum_coverage_percent')
+              or policy.get('global', {}).get('line_coverage_min')
+              or 0
+          )
           if pct < min_pct:
               raise SystemExit(f'Coverage policy violation: {pct} < {min_pct}')
           PY
