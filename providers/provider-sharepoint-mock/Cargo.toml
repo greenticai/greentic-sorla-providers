@@ -1,0 +1,18 @@
+[package]
+name = "provider-sharepoint-mock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "SharePoint mock SoRLa provider stub."
+readme = "README.md"
+publish = false
+
+[dependencies]
+sorla-provider-core = { workspace = true }
+sorla-provider-pack = { workspace = true }
+sorla-provider-catalog = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

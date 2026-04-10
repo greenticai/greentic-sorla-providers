@@ -1,0 +1,80 @@
+{
+  "catalog_format_version": "sorla-provider-catalog/v1",
+  "generated_from": "generated-pack-manifests",
+  "entries": [
+    {
+      "provider_id": "greentic.sorla.provider.foundationdb",
+      "provider_version": "0.1.0",
+      "provider_kind": "event-store",
+      "capabilities": [
+        "event-append",
+        "event-stream-read",
+        "projection-get",
+        "projection-rebuild",
+        "projection-checkpoint",
+        "health-check",
+        "config-validate",
+        "pack-metadata-emit"
+      ],
+      "tags": [
+        "event-store",
+        "real"
+      ],
+      "is_mock": false,
+      "status": "experimental",
+      "supported_provider_contract_version": "0.1.0",
+      "supported_sorla_ir": "0.1",
+      "supported_sorla_ir_range": ">=0.1, <0.2",
+      "config_schema_path": "schemas/provider-config.schema.json",
+      "artifact_uri": "./greentic-sorla-provider-foundationdb.gtpack.json",
+      "oci_reference": null
+    },
+    {
+      "provider_id": "greentic.sorla.provider.rag-mock",
+      "provider_version": "0.1.0",
+      "provider_kind": "evidence",
+      "capabilities": [
+        "evidence-query",
+        "evidence-resolve",
+        "health-check",
+        "config-validate",
+        "pack-metadata-emit"
+      ],
+      "tags": [
+        "evidence",
+        "mock"
+      ],
+      "is_mock": true,
+      "status": "experimental",
+      "supported_provider_contract_version": "0.1.0",
+      "supported_sorla_ir": "0.1",
+      "supported_sorla_ir_range": ">=0.1, <0.2",
+      "config_schema_path": "schemas/provider-config.schema.json",
+      "artifact_uri": "./greentic-sorla-provider-rag-mock.gtpack.json",
+      "oci_reference": null
+    },
+    {
+      "provider_id": "greentic.sorla.provider.sharepoint-mock",
+      "provider_version": "0.1.0",
+      "provider_kind": "external-ref",
+      "capabilities": [
+        "external-reference-resolve",
+        "health-check",
+        "config-validate",
+        "pack-metadata-emit"
+      ],
+      "tags": [
+        "external-ref",
+        "mock"
+      ],
+      "is_mock": true,
+      "status": "experimental",
+      "supported_provider_contract_version": "0.1.0",
+      "supported_sorla_ir": "0.1",
+      "supported_sorla_ir_range": ">=0.1, <0.2",
+      "config_schema_path": "schemas/provider-config.schema.json",
+      "artifact_uri": "./greentic-sorla-provider-sharepoint-mock.gtpack.json",
+      "oci_reference": null
+    }
+  ]
+}
