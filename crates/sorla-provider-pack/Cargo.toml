@@ -1,0 +1,25 @@
+[package]
+name = "sorla-provider-pack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Canonical SoRLa provider pack manifest model."
+readme = "README.md"
+publish = false
+keywords = ["greentic", "sorla", "provider", "pack"]
+categories = ["data-structures", "config"]
+include = [
+  "src/**",
+  "Cargo.toml",
+  "README.md",
+  "LICENSE",
+]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sorla-provider-core = { path = "../sorla-provider-core", version = "0.1.0" }
+thiserror = { workspace = true }

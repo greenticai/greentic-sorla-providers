@@ -1,0 +1,20 @@
+[package]
+name = "sorla-provider-pack-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "CLI for generating deterministic local SoRLa provider pack artifacts."
+readme = "README.md"
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sorla-provider-pack = { workspace = true }
+provider-foundationdb = { workspace = true }
+provider-sharepoint-mock = { workspace = true }
+provider-rag-mock = { workspace = true }
+

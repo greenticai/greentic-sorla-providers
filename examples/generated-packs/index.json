@@ -1,0 +1,20 @@
+[
+  {
+    "provider_id": "greentic.sorla.provider.foundationdb",
+    "manifest_path": "examples/generated-packs/greentic-sorla-provider-foundationdb/manifest.json",
+    "artifact_path": "examples/generated-packs/greentic-sorla-provider-foundationdb/greentic-sorla-provider-foundationdb.gtpack.json",
+    "schema_path": "examples/generated-packs/greentic-sorla-provider-foundationdb/schemas/provider-config.schema.json"
+  },
+  {
+    "provider_id": "greentic.sorla.provider.rag-mock",
+    "manifest_path": "examples/generated-packs/greentic-sorla-provider-rag-mock/manifest.json",
+    "artifact_path": "examples/generated-packs/greentic-sorla-provider-rag-mock/greentic-sorla-provider-rag-mock.gtpack.json",
+    "schema_path": "examples/generated-packs/greentic-sorla-provider-rag-mock/schemas/provider-config.schema.json"
+  },
+  {
+    "provider_id": "greentic.sorla.provider.sharepoint-mock",
+    "manifest_path": "examples/generated-packs/greentic-sorla-provider-sharepoint-mock/manifest.json",
+    "artifact_path": "examples/generated-packs/greentic-sorla-provider-sharepoint-mock/greentic-sorla-provider-sharepoint-mock.gtpack.json",
+    "schema_path": "examples/generated-packs/greentic-sorla-provider-sharepoint-mock/schemas/provider-config.schema.json"
+  }
+]

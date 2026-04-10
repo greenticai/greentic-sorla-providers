@@ -1,0 +1,23 @@
+name: Perf (lightweight)
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  perf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests (including perf guards)
+        run: cargo test --all --all-features
+
+      - name: Run benchmarks (smoke)
+        run: cargo bench -p sorla-provider-core --bench perf -- --sample-size 10

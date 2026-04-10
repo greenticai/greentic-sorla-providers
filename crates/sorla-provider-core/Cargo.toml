@@ -1,0 +1,33 @@
+[package]
+name = "sorla-provider-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Shared SoRLa provider contracts and metadata."
+readme = "README.md"
+keywords = ["greentic", "sorla", "provider", "contracts"]
+categories = ["api-bindings", "data-structures"]
+include = [
+  "src/**",
+  "tests/**",
+  "benches/**",
+  "Cargo.toml",
+  "README.md",
+  "LICENSE",
+]
+
+[dependencies]
+semver = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "perf"
+harness = false
+
