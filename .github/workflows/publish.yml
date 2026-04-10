@@ -1,0 +1,173 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Run local verification checks
+        run: bash ci/local_check.sh
+      - name: Validate tag and discover version
+        id: version
+        run: |
+          VERSION=$(awk -F ' = ' '/^version[[:space:]]*=/{gsub(/"/, "", $2); print $2; exit}' Cargo.toml)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            TAG="${{ github.ref_name }}"
+            if [[ "$TAG" != "v$VERSION" ]]; then
+              echo "Tag mismatch: tag '$TAG' does not match package version 'v$VERSION'"
+              exit 1
+            fi
+            echo "Tag '$TAG' matches version 'v$VERSION'."
+          fi
+
+  build-release-artifacts:
+    needs:
+      - verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Generate provider pack artifacts
+        run: cargo run -p sorla-provider-pack-cli
+      - name: Generate provider catalog
+        run: cargo run -p sorla-provider-catalog-cli
+      - name: Upload generated release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-release-artifacts
+          path: |
+            examples/generated-packs
+            examples/generated-catalog/provider-catalog.json
+          if-no-files-found: error
+
+  publish-crates:
+    needs:
+      - verify
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Publish crates to crates.io
+        run: |
+          if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]]; then
+            echo "CARGO_REGISTRY_TOKEN is required for release."
+            exit 1
+          fi
+
+          list=$(bash ci/local_check.sh --list-publishable)
+          if [[ -z "$list" ]]; then
+            echo "No publishable crates found."
+            exit 1
+          fi
+
+          while IFS='|' read -r crate manifest; do
+            if [[ -z "$crate" || -z "$manifest" ]]; then
+              continue
+            fi
+
+            echo "Preparing $crate"
+            cargo publish --manifest-path "$manifest" --dry-run
+
+            attempts=0
+            max_attempts=3
+            while true; do
+              cargo publish --manifest-path "$manifest"
+              status=$?
+              if [[ $status -eq 0 ]]; then
+                break
+              fi
+
+              attempts=$((attempts + 1))
+              if [[ $attempts -ge $max_attempts ]]; then
+                echo "Publish failed after $attempts attempts for $crate"
+                exit $status
+              fi
+
+              echo "Transient failure publishing $crate (attempt $attempts/$max_attempts). Retrying in 10s..."
+              sleep 10
+            done
+          done <<<"$list"
+
+  publish-oci:
+    if: github.event_name == 'push'
+    needs:
+      - verify
+      - build-release-artifacts
+    runs-on: ubuntu-latest
+    env:
+      OCI_NAMESPACE: ${{ github.repository }}
+      OCI_REGISTRY: ghcr.io
+      OCI_TAG: v${{ needs.verify.outputs.version }}
+      OCI_USERNAME: ${{ github.actor }}
+      OCI_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install ORAS
+        uses: oras-project/setup-oras@v1
+      - name: Download generated release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-release-artifacts
+          path: examples
+      - name: Publish OCI artifacts to GHCR
+        run: bash ci/publish_oci_artifacts.sh
+
+  publish-release-assets:
+    if: github.event_name == 'push'
+    needs:
+      - verify
+      - build-release-artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: provider-release-artifacts
+          path: examples
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.verify.outputs.version }}
+          generate_release_notes: true
+          files: |
+            examples/generated-packs/index.json
+            examples/generated-packs/*/*.gtpack.json
+            examples/generated-packs/*/manifest.json
+            examples/generated-catalog/provider-catalog.json

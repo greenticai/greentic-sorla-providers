@@ -1,0 +1,1 @@
+{"type":"object","properties":{"seed":{"type":"string"},"tenant_id":{"type":"string"}},"additionalProperties":false}
