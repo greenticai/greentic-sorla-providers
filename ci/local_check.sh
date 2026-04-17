@@ -14,11 +14,15 @@ print_step() {
 
 list_publishable_crates() {
     if command -v python3 >/dev/null 2>&1; then
-        cargo metadata --no-deps --format-version 1 | python3 - <<'PY'
+        local metadata_json
+        metadata_json=$(mktemp)
+        cargo metadata --no-deps --format-version 1 >"$metadata_json"
+        python3 - "$metadata_json" <<'PY'
 import json
-import subprocess
+import sys
 
-data = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"]).decode("utf-8"))
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
 for pkg in data.get("packages", []):
     publish = pkg.get("publish", None)
     if publish is False:
@@ -27,6 +31,7 @@ for pkg in data.get("packages", []):
         continue
     print(f"{pkg['name']}|{pkg['manifest_path']}")
 PY
+        rm -f "$metadata_json"
         return
     fi
 
