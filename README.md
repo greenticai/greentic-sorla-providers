@@ -122,7 +122,7 @@ Tagged releases publish generated provider artifacts in two places:
 - GitHub Release assets:
   - `examples/generated-packs/index.json`
   - provider `*.gtpack.json`
-  - provider `manifest.json`
+  - provider-specific `*-manifest.json`
   - `examples/generated-catalog/provider-catalog.json`
 - GHCR OCI artifacts:
   - `ghcr.io/<owner>/<repo>/<provider-id>-pack:vX.Y.Z`
