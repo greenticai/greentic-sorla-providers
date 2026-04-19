@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-PACKS_DIR="${ROOT_DIR}/examples/generated-packs"
-CATALOG_FILE="${ROOT_DIR}/examples/generated-catalog/provider-catalog.json"
+PACKS_DIR="examples/generated-packs"
+CATALOG_FILE="examples/generated-catalog/provider-catalog.json"
 
 OCI_REGISTRY="${OCI_REGISTRY:-ghcr.io}"
 OCI_NAMESPACE="${OCI_NAMESPACE:?OCI_NAMESPACE is required}"
@@ -22,6 +22,8 @@ artifact_ref() {
   local name="$1"
   printf '%s/%s/%s:%s' "$OCI_REGISTRY" "$OCI_NAMESPACE" "$name" "$OCI_TAG"
 }
+
+cd "$ROOT_DIR"
 
 heading "Generating provider packs"
 cargo run -p sorla-provider-pack-cli
