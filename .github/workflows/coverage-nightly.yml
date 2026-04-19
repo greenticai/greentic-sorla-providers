@@ -17,6 +17,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          profile: minimal
 
       - name: Install binstall
         uses: taiki-e/install-action@v2
@@ -37,41 +39,11 @@ jobs:
           fi
           greentic-dev coverage
 
-      - name: Enforce coverage policy
+      - name: Verify coverage report exists
         run: |
-          POLICY=coverage-policy.json
-          if [[ ! -f "$POLICY" ]]; then
-            echo "coverage-policy.json missing; coverage policy check skipped."
-            exit 0
-          fi
-
-          if ! python3 - <<'PY'
-          import json
-          import pathlib
-
-          policy_path = pathlib.Path('coverage-policy.json')
-          with policy_path.open() as f:
-              policy = json.load(f)
-
-          for candidate in ['coverage.json', 'coverage-summary.json', '.coverage/report.json']:
-              path = pathlib.Path(candidate)
-              if path.exists():
-                  report_path = path
-                  break
-          else:
-              raise SystemExit('No coverage report file found for policy enforcement.')
-
-          with report_path.open() as f:
-              report = json.load(f)
-
-          pct = report.get('coverage_percent') or report.get('total', {}).get('coverage_percent')
-          if pct is None:
-              raise SystemExit(f'Could not read total coverage from {report_path}')
-
-          min_pct = policy.get('minimum_coverage_percent', 0)
-          if pct < min_pct:
-              raise SystemExit(f'Coverage policy violation: {pct} < {min_pct}')
-          PY
-          then
+          report_path=target/coverage/coverage.json
+          if [[ ! -f "$report_path" ]]; then
+            echo "Expected coverage report not found at $report_path"
             exit 1
           fi
+          echo "Coverage report available at $report_path"

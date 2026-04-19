@@ -24,6 +24,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.94.0
         with:
+          profile: minimal
           components: rustfmt, clippy
       - name: Run local verification checks
         run: bash ci/local_check.sh
@@ -50,6 +51,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          profile: minimal
       - name: Generate provider pack artifacts
         run: cargo run -p sorla-provider-pack-cli
       - name: Generate provider catalog
@@ -73,6 +76,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          profile: minimal
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -140,6 +145,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          profile: minimal
       - name: Install ORAS
         uses: oras-project/setup-oras@v1
       - name: Download generated release artifacts
