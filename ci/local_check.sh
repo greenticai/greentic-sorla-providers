@@ -12,6 +12,28 @@ print_step() {
     echo "=================================================="
 }
 
+run_publish_command_allow_existing() {
+    local crate="$1"
+    shift
+
+    local output_file
+    output_file=$(mktemp)
+
+    if "$@" > >(tee "$output_file") 2> >(tee -a "$output_file" >&2); then
+        rm -f "$output_file"
+        return 0
+    fi
+
+    if grep -Fq "already exists on crates.io index" "$output_file"; then
+        echo "Skipping publish check for $crate: version already exists on crates.io index"
+        rm -f "$output_file"
+        return 0
+    fi
+
+    rm -f "$output_file"
+    return 1
+}
+
 list_publishable_crates() {
     if command -v python3 >/dev/null 2>&1; then
         local metadata_json
@@ -109,9 +131,11 @@ if [[ "$run_package_checks" -eq 1 ]]; then
 
         echo "publish --dry-run"
         if [[ "${CI:-}" == "true" ]]; then
-            cargo publish --dry-run --manifest-path "$manifest_path"
+            run_publish_command_allow_existing "$crate" \
+                cargo publish --dry-run --manifest-path "$manifest_path"
         else
-            cargo publish --allow-dirty --dry-run --manifest-path "$manifest_path"
+            run_publish_command_allow_existing "$crate" \
+                cargo publish --allow-dirty --dry-run --manifest-path "$manifest_path"
         fi
 
         package_listing=$(mktemp)
