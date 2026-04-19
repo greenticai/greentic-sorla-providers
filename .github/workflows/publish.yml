@@ -90,6 +90,28 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Publish crates to crates.io
         run: |
+          run_publish_command_allow_existing() {
+            local crate="$1"
+            shift
+
+            local output_file
+            output_file=$(mktemp)
+
+            if "$@" > >(tee "$output_file") 2> >(tee -a "$output_file" >&2); then
+              rm -f "$output_file"
+              return 0
+            fi
+
+            if grep -Fq "already exists on crates.io index" "$output_file"; then
+              echo "Skipping $crate: version already exists on crates.io index"
+              rm -f "$output_file"
+              return 0
+            fi
+
+            rm -f "$output_file"
+            return 1
+          }
+
           if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]]; then
             echo "CARGO_REGISTRY_TOKEN is required for release."
             exit 1
@@ -107,16 +129,17 @@ jobs:
             fi
 
             echo "Preparing $crate"
-            cargo publish --manifest-path "$manifest" --dry-run
+            run_publish_command_allow_existing "$crate" \
+              cargo publish --manifest-path "$manifest" --dry-run
 
             attempts=0
             max_attempts=3
             while true; do
-              cargo publish --manifest-path "$manifest"
-              status=$?
-              if [[ $status -eq 0 ]]; then
+              if run_publish_command_allow_existing "$crate" \
+                cargo publish --manifest-path "$manifest"; then
                 break
               fi
+              status=$?
 
               attempts=$((attempts + 1))
               if [[ $attempts -ge $max_attempts ]]; then
