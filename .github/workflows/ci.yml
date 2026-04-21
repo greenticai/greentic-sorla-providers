@@ -14,5 +14,3 @@ jobs:
     uses: greenticai/.github/.github/workflows/pr-ci.yml@main
     with:
       variant: host
-      # dependency-review already runs via dependency-review.yml; avoid duplicate runs.
-      run-dependency-review: false
