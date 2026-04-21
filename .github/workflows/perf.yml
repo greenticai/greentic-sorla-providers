@@ -1,11 +1,14 @@
 name: Perf (lightweight)
 
 on:
-  pull_request:
+  schedule:
+    - cron: "32 4 * * *"
+  workflow_dispatch:
   push:
     branches:
       - main
       - master
+  # pull_request: removed per plans/binary-bifurcation.md Phase A heavy-job sweep
 
 jobs:
   perf:
