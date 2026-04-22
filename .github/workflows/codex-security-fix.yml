@@ -2,7 +2,7 @@ name: Codex Security Fix
 on:
   schedule:
     # 04:09 UTC — staggered to avoid hot-spots.
-    - cron: "9 4 * * *"
+    - cron: "13 3 * * *"
   workflow_dispatch:
     inputs:
       branch:
