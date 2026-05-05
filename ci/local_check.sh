@@ -14,19 +14,18 @@ print_step() {
 
 list_publishable_crates() {
     if command -v python3 >/dev/null 2>&1; then
-        cargo metadata --no-deps --format-version 1 | python3 - <<'PY'
-import json
-import subprocess
+        cargo metadata --no-deps --format-version 1 | python3 -c "
+import json, sys
 
-data = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"]).decode("utf-8"))
-for pkg in data.get("packages", []):
-    publish = pkg.get("publish", None)
+data = json.load(sys.stdin)
+for pkg in data.get('packages', []):
+    publish = pkg.get('publish', None)
     if publish is False:
         continue
     if isinstance(publish, list) and len(publish) == 0:
         continue
-    print(f"{pkg['name']}|{pkg['manifest_path']}")
-PY
+    print(pkg['name'] + '|' + pkg['manifest_path'])
+"
         return
     fi
 

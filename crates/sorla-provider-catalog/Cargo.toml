@@ -21,6 +21,6 @@ include = [
 
 [dependencies]
 serde = { workspace = true }
-sorla-provider-core = { path = "../sorla-provider-core", version = "0.1.0" }
-sorla-provider-pack = { path = "../sorla-provider-pack", version = "0.1.0" }
+sorla-provider-core = { path = "../sorla-provider-core", version = ">=1.1.0-dev, <1.2.0-0" }
+sorla-provider-pack = { path = "../sorla-provider-pack", version = ">=1.1.0-dev, <1.2.0-0" }
 serde_json = { workspace = true }
