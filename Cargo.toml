@@ -39,24 +39,24 @@ features = [
 
 [workspace.dependencies.sorla-provider-core]
 path = "crates/sorla-provider-core"
-version = "0.1.0"
+version = ">=1.1.0-dev, <1.2.0-0"
 
 [workspace.dependencies.sorla-provider-pack]
 path = "crates/sorla-provider-pack"
-version = "0.1.0"
+version = ">=1.1.0-dev, <1.2.0-0"
 
 [workspace.dependencies.sorla-provider-catalog]
 path = "crates/sorla-provider-catalog"
-version = "0.1.0"
+version = ">=1.1.0-dev, <1.2.0-0"
 
 [workspace.dependencies.provider-foundationdb]
 path = "providers/provider-foundationdb"
-version = "0.1.0"
+version = ">=1.1.0-dev, <1.2.0-0"
 
 [workspace.dependencies.provider-sharepoint-mock]
 path = "providers/provider-sharepoint-mock"
-version = "0.1.0"
+version = ">=1.1.0-dev, <1.2.0-0"
 
 [workspace.dependencies.provider-rag-mock]
 path = "providers/provider-rag-mock"
-version = "0.1.0"
+version = ">=1.1.0-dev, <1.2.0-0"
