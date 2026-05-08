@@ -1,17 +1,22 @@
 name: CI
 
 on:
+  workflow_call:
   pull_request:
-  push:
-    branches:
-      - main
-      - master
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  ci:
+    uses: greenticai/.github/.github/workflows/pr-ci.yml@main
+    with:
+      variant: host
+
   detect-providers:
     runs-on: ubuntu-latest
     outputs:
@@ -25,11 +30,14 @@ jobs:
         with:
           profile: minimal
       - name: List changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" > changed-files.txt
+          if [[ -n "$BASE_SHA" ]]; then
+            git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed-files.txt
           else
-            git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" > changed-files.txt
+            : > changed-files.txt
           fi
           cat changed-files.txt
       - name: Build provider matrix
@@ -39,34 +47,10 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "$matrix"
 
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.94.0
-        with:
-          profile: minimal
-          components: rustfmt, clippy
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-      - name: cargo clippy
-        run: cargo clippy -p sorla-provider-core -p sorla-provider-pack -p sorla-provider-catalog -p sorla-provider-catalog-cli -p xtask --all-targets --all-features -- -D warnings
-
   provider-check:
     needs:
+      - ci
       - detect-providers
-      - lint
     runs-on: ubuntu-latest
     if: ${{ fromJson(needs.detect-providers.outputs.matrix).include[0] != null }}
     strategy:
@@ -94,62 +78,3 @@ jobs:
         run: cargo test -p ${{ matrix.package }} --all-features
       - name: cargo build provider
         run: cargo build -p ${{ matrix.package }} --all-features
-
-  shared-test:
-    needs:
-      - lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.94.0
-        with:
-          profile: minimal
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-      - name: cargo test shared crates
-        run: cargo test -p sorla-provider-core -p sorla-provider-pack -p sorla-provider-catalog -p sorla-provider-catalog-cli -p xtask --all-features
-
-  i18n:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install cargo-binstall
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-binstall
-      - name: Validate i18n configuration
-        run: |
-          bash tools/i18n.sh validate
-          bash tools/i18n.sh status
-
-  package-dry-run:
-    needs:
-      - shared-test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.94.0
-        with:
-          profile: minimal
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-      - name: Verify package and publish dry-run for publishable crates
-        run: bash ci/local_check.sh --package-only
