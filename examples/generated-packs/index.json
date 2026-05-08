@@ -1,20 +1,29 @@
 [
   {
     "provider_id": "greentic.sorla.provider.foundationdb",
+    "provider_version": "0.1.4",
+    "provider_slug": "foundationdb",
     "manifest_path": "examples/generated-packs/greentic-sorla-provider-foundationdb/manifest.json",
     "artifact_path": "examples/generated-packs/greentic-sorla-provider-foundationdb/greentic-sorla-provider-foundationdb.gtpack.json",
-    "schema_path": "examples/generated-packs/greentic-sorla-provider-foundationdb/schemas/provider-config.schema.json"
+    "schema_path": "examples/generated-packs/greentic-sorla-provider-foundationdb/schemas/provider-config.schema.json",
+    "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.4"
   },
   {
     "provider_id": "greentic.sorla.provider.rag-mock",
+    "provider_version": "0.1.4",
+    "provider_slug": "rag-mock",
     "manifest_path": "examples/generated-packs/greentic-sorla-provider-rag-mock/manifest.json",
     "artifact_path": "examples/generated-packs/greentic-sorla-provider-rag-mock/greentic-sorla-provider-rag-mock.gtpack.json",
-    "schema_path": "examples/generated-packs/greentic-sorla-provider-rag-mock/schemas/provider-config.schema.json"
+    "schema_path": "examples/generated-packs/greentic-sorla-provider-rag-mock/schemas/provider-config.schema.json",
+    "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/rag-mock:0.1.4"
   },
   {
     "provider_id": "greentic.sorla.provider.sharepoint-mock",
+    "provider_version": "0.1.4",
+    "provider_slug": "sharepoint-mock",
     "manifest_path": "examples/generated-packs/greentic-sorla-provider-sharepoint-mock/manifest.json",
     "artifact_path": "examples/generated-packs/greentic-sorla-provider-sharepoint-mock/greentic-sorla-provider-sharepoint-mock.gtpack.json",
-    "schema_path": "examples/generated-packs/greentic-sorla-provider-sharepoint-mock/schemas/provider-config.schema.json"
+    "schema_path": "examples/generated-packs/greentic-sorla-provider-sharepoint-mock/schemas/provider-config.schema.json",
+    "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/sharepoint-mock:0.1.4"
   }
 ]

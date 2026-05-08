@@ -4,12 +4,13 @@
   "entries": [
     {
       "provider_id": "greentic.sorla.provider.foundationdb",
-      "provider_version": "0.1.0",
+      "provider_version": "0.1.4",
       "provider_kind": "event-store",
       "capabilities": [
         "event-append",
         "event-stream-read",
         "projection-get",
+        "projection-put",
         "projection-rebuild",
         "projection-checkpoint",
         "health-check",
@@ -27,11 +28,11 @@
       "supported_sorla_ir_range": ">=0.1, <0.2",
       "config_schema_path": "schemas/provider-config.schema.json",
       "artifact_uri": "./greentic-sorla-provider-foundationdb.gtpack.json",
-      "oci_reference": null
+      "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.4"
     },
     {
       "provider_id": "greentic.sorla.provider.rag-mock",
-      "provider_version": "0.1.0",
+      "provider_version": "0.1.4",
       "provider_kind": "evidence",
       "capabilities": [
         "evidence-query",
@@ -51,11 +52,11 @@
       "supported_sorla_ir_range": ">=0.1, <0.2",
       "config_schema_path": "schemas/provider-config.schema.json",
       "artifact_uri": "./greentic-sorla-provider-rag-mock.gtpack.json",
-      "oci_reference": null
+      "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/rag-mock:0.1.4"
     },
     {
       "provider_id": "greentic.sorla.provider.sharepoint-mock",
-      "provider_version": "0.1.0",
+      "provider_version": "0.1.4",
       "provider_kind": "external-ref",
       "capabilities": [
         "external-reference-resolve",
@@ -74,7 +75,7 @@
       "supported_sorla_ir_range": ">=0.1, <0.2",
       "config_schema_path": "schemas/provider-config.schema.json",
       "artifact_uri": "./greentic-sorla-provider-sharepoint-mock.gtpack.json",
-      "oci_reference": null
+      "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/sharepoint-mock:0.1.4"
     }
   ]
 }

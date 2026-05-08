@@ -14,6 +14,7 @@ Run:
 
 ```bash
 cargo run -p sorla-provider-pack-cli
+cargo run -p sorla-provider-pack-cli -- --provider rag-mock
 ```
 
 By default this writes to `examples/generated-packs/`.
@@ -29,7 +30,7 @@ Each provider gets its own deterministic directory:
 - `schemas/provider-config.schema.json`
   Stub configuration schema shipped with the generated artifact.
 
-The generator also writes `examples/generated-packs/index.json` listing every generated provider pack.
+The generator also writes `examples/generated-packs/index.json` listing every generated provider pack. When `--provider` is supplied, the index contains only the selected provider.
 
 ## Manifest Shape
 
@@ -65,10 +66,13 @@ The canonical source of truth remains the generated local manifest and pack layo
 
 ### Published OCI References
 
-For a tag `vX.Y.Z`, the release workflow publishes:
+Each provider is published under its own exact semantic version, read from that provider crate's `Cargo.toml`:
 
-- `ghcr.io/<owner>/<repo>/<provider-id>-pack:vX.Y.Z`
-- `ghcr.io/<owner>/<repo>/provider-catalog:vX.Y.Z`
+- `oci://ghcr.io/greenticai/sorla-providers/foundationdb:X.Y.Z`
+- `oci://ghcr.io/greenticai/sorla-providers/sharepoint-mock:X.Y.Z`
+- `oci://ghcr.io/greenticai/sorla-providers/rag-mock:X.Y.Z`
+
+These exact references are intended for bundles and toolchain manifests. Moving tags can exist as convenience aliases, but exact semantic versions are the stable contract.
 
 Each provider pack OCI artifact includes:
 

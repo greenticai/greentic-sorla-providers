@@ -1,7 +1,7 @@
 {
   "pack_format_version": "sorla-provider-pack/v1",
   "provider_id": "greentic.sorla.provider.rag-mock",
-  "provider_version": "0.1.0",
+  "provider_version": "0.1.4",
   "provider_kind": "evidence",
   "capabilities": [
     "evidence-query",
@@ -26,15 +26,15 @@
       "component_id": "rag-mock-runtime",
       "kind": "service",
       "entrypoint": "provider-rag-mock",
-      "artifact_uri": "oci://ghcr.io/greenticai/greentic-sorla-providers/provider-rag-mock:v0.1.0"
+      "artifact_uri": "oci://ghcr.io/greenticai/sorla-providers/rag-mock:0.1.4"
     }
   ],
   "config_schema": {
     "format": "json-schema",
     "path": "schemas/provider-config.schema.json",
-    "schema_json": "{\"type\":\"object\",\"properties\":{\"seed\":{\"type\":\"string\"},\"max_results\":{\"type\":\"integer\",\"minimum\":1}},\"additionalProperties\":false}"
+    "schema_json": "{\"type\":\"object\",\"required\":[\"seed\",\"max_results\"],\"properties\":{\"seed\":{\"type\":\"string\"},\"max_results\":{\"type\":\"integer\",\"minimum\":1}},\"additionalProperties\":false}"
   },
-  "oci_reference": null,
+  "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/rag-mock:0.1.4",
   "display": {
     "title": "RAG Mock",
     "summary": "RAG Mock provider manifest for SoRLa"

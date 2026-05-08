@@ -8,6 +8,7 @@ members = [
   "providers/provider-foundationdb",
   "providers/provider-sharepoint-mock",
   "providers/provider-rag-mock",
+  "xtask",
 ]
 resolver = "2"
 
@@ -29,6 +30,6 @@ thiserror = "2"
 sorla-provider-core = { path = "crates/sorla-provider-core", version = "0.1.0" }
 sorla-provider-pack = { path = "crates/sorla-provider-pack", version = "0.1.0" }
 sorla-provider-catalog = { path = "crates/sorla-provider-catalog", version = "0.1.0" }
-provider-foundationdb = { path = "providers/provider-foundationdb", version = "0.1.0" }
-provider-sharepoint-mock = { path = "providers/provider-sharepoint-mock", version = "0.1.0" }
-provider-rag-mock = { path = "providers/provider-rag-mock", version = "0.1.0" }
+provider-foundationdb = { path = "providers/provider-foundationdb" }
+provider-sharepoint-mock = { path = "providers/provider-sharepoint-mock" }
+provider-rag-mock = { path = "providers/provider-rag-mock" }

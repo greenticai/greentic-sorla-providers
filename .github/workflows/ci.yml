@@ -1,7 +1,9 @@
 name: CI
+
 on:
   workflow_call:
   pull_request:
+
 permissions:
   contents: read
 
@@ -14,3 +16,65 @@ jobs:
     uses: greenticai/.github/.github/workflows/pr-ci.yml@main
     with:
       variant: host
+
+  detect-providers:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          profile: minimal
+      - name: List changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [[ -n "$BASE_SHA" ]]; then
+            git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed-files.txt
+          else
+            : > changed-files.txt
+          fi
+          cat changed-files.txt
+      - name: Build provider matrix
+        id: matrix
+        run: |
+          matrix=$(cargo xtask provider-matrix --provider all --changed-files changed-files.txt)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix"
+
+  provider-check:
+    needs:
+      - ci
+      - detect-providers
+    runs-on: ubuntu-latest
+    if: ${{ fromJson(needs.detect-providers.outputs.matrix).include[0] != null }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect-providers.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          profile: minimal
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: cargo clippy provider
+        run: cargo clippy -p ${{ matrix.package }} --all-targets --all-features -- -D warnings
+      - name: cargo test provider
+        run: cargo test -p ${{ matrix.package }} --all-features
+      - name: cargo build provider
+        run: cargo build -p ${{ matrix.package }} --all-features
