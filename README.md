@@ -98,7 +98,7 @@ The translator expects flat key/value JSON in `i18n/en.json`. Locale files are c
   Runs lint, tests, i18n validation, and packaging dry-runs on PRs and pushes to `main` or `master`. Provider checks are matrixed from `ci/provider-dependencies.json`, so a change below `providers/provider-sharepoint-mock/**` checks that provider, while shared crate, workflow, lockfile, or build-script changes check every affected provider.
 
 - `.github/workflows/publish.yml`
-  Publishes selected provider artifacts. Manual runs accept `provider` (`all` or one provider such as `sharepoint-mock`) and `version_bump` (`none`, `patch`, `minor`, `major`). A single-provider run builds and publishes only that provider. Tag pushes still publish all provider artifacts.
+  Publishes selected provider artifacts. Manual runs accept `provider` (`all` or one provider such as `sharepoint-mock`), `version_bump` (`none`, `patch`, `minor`, `major`), and optional `release_tag` for GitHub Release assets. A single-provider run builds and publishes only that provider. Tag pushes still publish all provider artifacts and release assets.
 
 - `.github/workflows/perf.yml`
   Runs lightweight performance guardrails against the shared core crate.
@@ -166,6 +166,18 @@ oci://ghcr.io/greenticai/sorla-providers/rag-mock:0.1.4
 Moving tags such as `latest` or `stable` may be added later, but bundles should use exact semantic versions.
 
 The release workflow regenerates pack and catalog outputs from source, publishes crates.io crates on tag pushes, then publishes the selected generated artifacts to GHCR using OCI artifact types rather than container images.
+
+For a manual republish of all OCI artifacts after this workflow is available on the selected branch:
+
+```bash
+gh workflow run publish.yml --ref main -f provider=all -f version_bump=none
+```
+
+To also upload GitHub Release assets from a manual run, pass a release tag:
+
+```bash
+gh workflow run publish.yml --ref main -f provider=all -f version_bump=none -f release_tag=v0.1.4
+```
 
 ### Change detection
 
