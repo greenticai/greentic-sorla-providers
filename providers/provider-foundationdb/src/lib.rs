@@ -13,8 +13,12 @@ use sorla_provider_core::{
     ProviderStatus, SORLA_PROVIDER_CONTRACT_VERSION,
 };
 use sorla_provider_pack::{
-    ArtifactReference, ConfigSchemaRef, ProviderPackManifest, RuntimeComponentRef,
+    ArtifactReference, ConfigSchemaRef, ProviderPackManifest, provider_artifact_file_uri,
+    provider_runtime_component,
 };
+
+const PROVIDER_ID: &str = "greentic.sorla.provider.foundationdb";
+const PROVIDER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FoundationDbConfig {
@@ -121,10 +125,10 @@ impl FoundationDbProvider {
 impl ProviderMetadataSource for FoundationDbProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
-            provider_id: "greentic.sorla.provider.foundationdb".into(),
+            provider_id: PROVIDER_ID.into(),
             display_name: "FoundationDB".into(),
             provider_kind: "event-store".into(),
-            version: "0.1.0".into(),
+            version: PROVIDER_VERSION.into(),
             status: ProviderStatus::Experimental,
             is_mock: false,
             capabilities: vec![
@@ -320,16 +324,14 @@ pub fn pack_manifest() -> ProviderPackManifest {
         &provider.metadata(),
         vec![ArtifactReference {
             kind: "gtpack-json".into(),
-            uri: "./greentic-sorla-provider-foundationdb.gtpack.json".into(),
+            uri: provider_artifact_file_uri(PROVIDER_ID),
         }],
-        vec![RuntimeComponentRef {
-            component_id: "foundationdb-runtime".into(),
-            kind: "service".into(),
-            entrypoint: "provider-foundationdb".into(),
-            artifact_uri:
-                "oci://ghcr.io/greenticai/greentic-sorla-providers/provider-foundationdb:v0.1.0"
-                    .into(),
-        }],
+        vec![provider_runtime_component(
+            PROVIDER_ID,
+            PROVIDER_VERSION,
+            "foundationdb-runtime",
+            "provider-foundationdb",
+        )],
         ConfigSchemaRef {
             format: "json-schema".into(),
             path: "schemas/provider-config.schema.json".into(),
@@ -397,6 +399,11 @@ mod tests {
         let entry = catalog_entry();
 
         assert_eq!(manifest.provider_id, entry.provider_id);
+        assert_eq!(manifest.provider_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            manifest.oci_reference.as_deref(),
+            Some("oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.4")
+        );
         assert_eq!(
             provider.pack_emission().artifact_ref,
             "file://generated/provider-foundationdb.gtpack"

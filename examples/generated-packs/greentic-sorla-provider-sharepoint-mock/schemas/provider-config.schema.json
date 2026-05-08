@@ -1,1 +1,1 @@
-{"type":"object","properties":{"seed":{"type":"string"},"tenant_id":{"type":"string"}},"additionalProperties":false}
+{"type":"object","required":["seed","tenant_id"],"properties":{"seed":{"type":"string"},"tenant_id":{"type":"string"}},"additionalProperties":false}

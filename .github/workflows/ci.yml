@@ -12,6 +12,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  detect-providers:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          profile: minimal
+      - name: List changed files
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" > changed-files.txt
+          else
+            git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" > changed-files.txt
+          fi
+          cat changed-files.txt
+      - name: Build provider matrix
+        id: matrix
+        run: |
+          matrix=$(cargo xtask provider-matrix --provider all --changed-files changed-files.txt)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix"
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -34,9 +61,43 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy -p sorla-provider-core -p sorla-provider-pack -p sorla-provider-catalog -p sorla-provider-catalog-cli -p xtask --all-targets --all-features -- -D warnings
 
-  test:
+  provider-check:
+    needs:
+      - detect-providers
+      - lint
+    runs-on: ubuntu-latest
+    if: ${{ fromJson(needs.detect-providers.outputs.matrix).include[0] != null }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect-providers.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          profile: minimal
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: cargo clippy provider
+        run: cargo clippy -p ${{ matrix.package }} --all-targets --all-features -- -D warnings
+      - name: cargo test provider
+        run: cargo test -p ${{ matrix.package }} --all-features
+      - name: cargo build provider
+        run: cargo build -p ${{ matrix.package }} --all-features
+
+  shared-test:
+    needs:
+      - lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,8 +115,8 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
-      - name: cargo test
-        run: cargo test --all-features
+      - name: cargo test shared crates
+        run: cargo test -p sorla-provider-core -p sorla-provider-pack -p sorla-provider-catalog -p sorla-provider-catalog-cli -p xtask --all-features
 
   i18n:
     runs-on: ubuntu-latest
@@ -71,6 +132,8 @@ jobs:
           bash tools/i18n.sh status
 
   package-dry-run:
+    needs:
+      - shared-test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

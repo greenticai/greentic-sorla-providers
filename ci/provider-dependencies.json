@@ -1,0 +1,58 @@
+{
+  "providers": {
+    "foundationdb": {
+      "package": "provider-foundationdb",
+      "manifest_path": "providers/provider-foundationdb/Cargo.toml",
+      "paths": ["providers/provider-foundationdb/**"],
+      "depends_on": [
+        "sorla-provider-core",
+        "sorla-provider-pack",
+        "sorla-provider-catalog"
+      ]
+    },
+    "rag-mock": {
+      "package": "provider-rag-mock",
+      "manifest_path": "providers/provider-rag-mock/Cargo.toml",
+      "paths": ["providers/provider-rag-mock/**"],
+      "depends_on": [
+        "sorla-provider-core",
+        "sorla-provider-pack",
+        "sorla-provider-catalog"
+      ]
+    },
+    "sharepoint-mock": {
+      "package": "provider-sharepoint-mock",
+      "manifest_path": "providers/provider-sharepoint-mock/Cargo.toml",
+      "paths": ["providers/provider-sharepoint-mock/**"],
+      "depends_on": [
+        "sorla-provider-core",
+        "sorla-provider-pack",
+        "sorla-provider-catalog"
+      ]
+    }
+  },
+  "shared_crates": {
+    "sorla-provider-core": {
+      "paths": ["crates/sorla-provider-core/**"],
+      "affects": ["foundationdb", "rag-mock", "sharepoint-mock"]
+    },
+    "sorla-provider-pack": {
+      "paths": ["crates/sorla-provider-pack/**"],
+      "affects": ["foundationdb", "rag-mock", "sharepoint-mock"]
+    },
+    "sorla-provider-catalog": {
+      "paths": ["crates/sorla-provider-catalog/**"],
+      "affects": ["foundationdb", "rag-mock", "sharepoint-mock"]
+    }
+  },
+  "rebuild_all_paths": [
+    ".cargo/**",
+    ".github/workflows/**",
+    "Cargo.lock",
+    "Cargo.toml",
+    "ci/**",
+    "crates/sorla-provider-pack-cli/**",
+    "crates/sorla-provider-catalog-cli/**",
+    "xtask/**"
+  ]
+}

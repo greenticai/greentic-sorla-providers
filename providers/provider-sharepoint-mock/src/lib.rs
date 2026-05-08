@@ -9,8 +9,12 @@ use sorla_provider_core::{
     SORLA_PROVIDER_CONTRACT_VERSION,
 };
 use sorla_provider_pack::{
-    ArtifactReference, ConfigSchemaRef, ProviderPackManifest, RuntimeComponentRef,
+    ArtifactReference, ConfigSchemaRef, ProviderPackManifest, provider_artifact_file_uri,
+    provider_runtime_component,
 };
+
+const PROVIDER_ID: &str = "greentic.sorla.provider.sharepoint-mock";
+const PROVIDER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharePointMockConfig {
@@ -239,10 +243,10 @@ impl SharePointMockProvider {
 impl ProviderMetadataSource for SharePointMockProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
-            provider_id: "greentic.sorla.provider.sharepoint-mock".into(),
+            provider_id: PROVIDER_ID.into(),
             display_name: "SharePoint Mock".into(),
             provider_kind: "external-ref".into(),
-            version: "0.1.0".into(),
+            version: PROVIDER_VERSION.into(),
             status: ProviderStatus::Experimental,
             is_mock: true,
             capabilities: vec![
@@ -332,16 +336,14 @@ pub fn pack_manifest() -> ProviderPackManifest {
         &provider.metadata(),
         vec![ArtifactReference {
             kind: "gtpack-json".into(),
-            uri: "./greentic-sorla-provider-sharepoint-mock.gtpack.json".into(),
+            uri: provider_artifact_file_uri(PROVIDER_ID),
         }],
-        vec![RuntimeComponentRef {
-            component_id: "sharepoint-mock-runtime".into(),
-            kind: "service".into(),
-            entrypoint: "provider-sharepoint-mock".into(),
-            artifact_uri:
-                "oci://ghcr.io/greenticai/greentic-sorla-providers/provider-sharepoint-mock:v0.1.0"
-                    .into(),
-        }],
+        vec![provider_runtime_component(
+            PROVIDER_ID,
+            PROVIDER_VERSION,
+            "sharepoint-mock-runtime",
+            "provider-sharepoint-mock",
+        )],
         ConfigSchemaRef {
             format: "json-schema".into(),
             path: "schemas/provider-config.schema.json".into(),
@@ -412,6 +414,11 @@ mod tests {
         let entry = catalog_entry();
 
         assert_eq!(manifest.provider_id, entry.provider_id);
+        assert_eq!(manifest.provider_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            manifest.oci_reference.as_deref(),
+            Some("oci://ghcr.io/greenticai/sorla-providers/sharepoint-mock:0.1.4")
+        );
         assert_eq!(
             provider.pack_emission().artifact_ref,
             "file://generated/provider-sharepoint-mock.gtpack"

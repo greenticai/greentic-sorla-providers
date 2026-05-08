@@ -90,6 +90,9 @@ impl ProviderPackManifest {
         runtime_components: Vec<RuntimeComponentRef>,
         config_schema: ConfigSchemaRef,
     ) -> Self {
+        let oci_reference = runtime_components
+            .first()
+            .map(|component| component.artifact_uri.clone());
         Self {
             pack_format_version: "sorla-provider-pack/v1".into(),
             provider_id: metadata.provider_id.clone(),
@@ -107,7 +110,7 @@ impl ProviderPackManifest {
             artifact_references,
             runtime_components,
             config_schema,
-            oci_reference: None,
+            oci_reference,
             display: DisplayMetadata {
                 title: metadata.display_name.clone(),
                 summary: format!("{} provider manifest for SoRLa", metadata.display_name),
@@ -116,18 +119,61 @@ impl ProviderPackManifest {
     }
 
     pub fn package_dir_name(&self) -> String {
-        self.provider_id
-            .chars()
-            .map(|ch| match ch {
-                'a'..='z' | 'A'..='Z' | '0'..='9' => ch.to_ascii_lowercase(),
-                _ => '-',
-            })
-            .collect()
+        provider_id_to_package_dir(&self.provider_id)
     }
 
     pub fn artifact_file_name(&self) -> String {
         format!("{}.gtpack.json", self.package_dir_name())
     }
+
+    pub fn provider_slug(&self) -> String {
+        provider_slug(&self.provider_id)
+    }
+}
+
+pub fn provider_slug(provider_id: &str) -> String {
+    provider_id
+        .rsplit('.')
+        .next()
+        .unwrap_or(provider_id)
+        .trim_start_matches("provider-")
+        .to_ascii_lowercase()
+}
+
+pub fn provider_artifact_file_uri(provider_id: &str) -> String {
+    format!("./{}.gtpack.json", provider_id_to_package_dir(provider_id))
+}
+
+pub fn provider_runtime_oci_reference(provider_id: &str, version: &str) -> String {
+    format!(
+        "oci://ghcr.io/greenticai/sorla-providers/{}:{}",
+        provider_slug(provider_id),
+        version
+    )
+}
+
+pub fn provider_runtime_component(
+    provider_id: &str,
+    version: &str,
+    component_id: impl Into<String>,
+    entrypoint: impl Into<String>,
+) -> RuntimeComponentRef {
+    RuntimeComponentRef {
+        component_id: component_id.into(),
+        kind: "service".into(),
+        entrypoint: entrypoint.into(),
+        artifact_uri: provider_runtime_oci_reference(provider_id, version),
+    }
+}
+
+fn provider_id_to_package_dir(provider_id: &str) -> String {
+    provider_id
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' => ch.to_ascii_lowercase(),
+            _ => '-',
+        })
+        .collect()
 }
 
 impl GeneratedPackArtifact {

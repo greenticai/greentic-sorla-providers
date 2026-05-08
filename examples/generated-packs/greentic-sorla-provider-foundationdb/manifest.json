@@ -1,12 +1,13 @@
 {
   "pack_format_version": "sorla-provider-pack/v1",
   "provider_id": "greentic.sorla.provider.foundationdb",
-  "provider_version": "0.1.0",
+  "provider_version": "0.1.4",
   "provider_kind": "event-store",
   "capabilities": [
     "event-append",
     "event-stream-read",
     "projection-get",
+    "projection-put",
     "projection-rebuild",
     "projection-checkpoint",
     "health-check",
@@ -29,15 +30,15 @@
       "component_id": "foundationdb-runtime",
       "kind": "service",
       "entrypoint": "provider-foundationdb",
-      "artifact_uri": "oci://ghcr.io/greenticai/greentic-sorla-providers/provider-foundationdb:v0.1.0"
+      "artifact_uri": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.4"
     }
   ],
   "config_schema": {
     "format": "json-schema",
     "path": "schemas/provider-config.schema.json",
-    "schema_json": "{\"type\":\"object\",\"required\":[\"cluster_file\"],\"properties\":{\"cluster_file\":{\"type\":\"string\"},\"tenant_prefix\":{\"type\":\"string\"}},\"additionalProperties\":false}"
+    "schema_json": "{\"type\":\"object\",\"required\":[\"cluster_file\",\"tenant_prefix\"],\"properties\":{\"cluster_file\":{\"type\":\"string\"},\"tenant_prefix\":{\"type\":\"string\"}},\"additionalProperties\":false}"
   },
-  "oci_reference": null,
+  "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.4",
   "display": {
     "title": "FoundationDB",
     "summary": "FoundationDB provider manifest for SoRLa"

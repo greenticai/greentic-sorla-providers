@@ -3,7 +3,7 @@
   "manifest": {
     "pack_format_version": "sorla-provider-pack/v1",
     "provider_id": "greentic.sorla.provider.sharepoint-mock",
-    "provider_version": "0.1.0",
+    "provider_version": "0.1.4",
     "provider_kind": "external-ref",
     "capabilities": [
       "external-reference-resolve",
@@ -27,15 +27,15 @@
         "component_id": "sharepoint-mock-runtime",
         "kind": "service",
         "entrypoint": "provider-sharepoint-mock",
-        "artifact_uri": "oci://ghcr.io/greenticai/greentic-sorla-providers/provider-sharepoint-mock:v0.1.0"
+        "artifact_uri": "oci://ghcr.io/greenticai/sorla-providers/sharepoint-mock:0.1.4"
       }
     ],
     "config_schema": {
       "format": "json-schema",
       "path": "schemas/provider-config.schema.json",
-      "schema_json": "{\"type\":\"object\",\"properties\":{\"seed\":{\"type\":\"string\"},\"tenant_id\":{\"type\":\"string\"}},\"additionalProperties\":false}"
+      "schema_json": "{\"type\":\"object\",\"required\":[\"seed\",\"tenant_id\"],\"properties\":{\"seed\":{\"type\":\"string\"},\"tenant_id\":{\"type\":\"string\"}},\"additionalProperties\":false}"
     },
-    "oci_reference": null,
+    "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/sharepoint-mock:0.1.4",
     "display": {
       "title": "SharePoint Mock",
       "summary": "SharePoint Mock provider manifest for SoRLa"

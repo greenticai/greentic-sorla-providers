@@ -1,1 +1,1 @@
-{"type":"object","required":["cluster_file"],"properties":{"cluster_file":{"type":"string"},"tenant_prefix":{"type":"string"}},"additionalProperties":false}
+{"type":"object","required":["cluster_file","tenant_prefix"],"properties":{"cluster_file":{"type":"string"},"tenant_prefix":{"type":"string"}},"additionalProperties":false}
