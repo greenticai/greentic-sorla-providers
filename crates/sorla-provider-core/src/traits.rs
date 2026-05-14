@@ -1,8 +1,9 @@
 use crate::types::{
-    AppendEventRequest, EventRecord, EventStreamRequest, EvidenceItem, EvidenceQuery,
-    ExternalReferencePayload, ExternalReferenceRequest, HealthReport, PackEmission,
+    AppendEventRequest, EntityLink, EntityLinkRequest, EntityRecord, EntityRef, EntitySearchQuery,
+    EventRecord, EventStreamRequest, EvidenceItem, EvidenceQuery, ExternalReferencePayload,
+    ExternalReferenceRequest, HealthReport, OntologyPath, PackEmission, PathQuery,
     PersistProjectionRequest, ProjectionCheckpoint, ProjectionRebuildRequest, ProjectionRecord,
-    ProviderError, ProviderMetadata,
+    ProviderError, ProviderMetadata, RelationshipInstance, RelationshipQuery,
 };
 
 /// Exposes stable provider identity and capability metadata.
@@ -58,4 +59,34 @@ pub trait ExternalReferenceProvider {
 /// Evidence query and evidence lookup capabilities.
 pub trait EvidenceProvider {
     fn query_evidence(&self, query: EvidenceQuery) -> Result<Vec<EvidenceItem>, ProviderError>;
+}
+
+/// Generic ontology entity storage capabilities.
+pub trait EntityStoreProvider {
+    fn upsert_entity(&self, entity: EntityRecord) -> Result<EntityRecord, ProviderError>;
+    fn get_entity(&self, entity: EntityRef) -> Result<Option<EntityRecord>, ProviderError>;
+    fn search_entities(
+        &self,
+        request: EntitySearchQuery,
+    ) -> Result<Vec<EntityRecord>, ProviderError>;
+}
+
+/// Generic ontology graph traversal capabilities.
+pub trait OntologyGraphProvider {
+    fn query_relationships(
+        &self,
+        request: RelationshipQuery,
+    ) -> Result<Vec<RelationshipInstance>, ProviderError>;
+
+    fn find_paths(&self, request: PathQuery) -> Result<Vec<OntologyPath>, ProviderError>;
+}
+
+/// Links external content and evidence to generic ontology entities.
+pub trait EntityLinkProvider {
+    fn link_entities(&self, request: EntityLinkRequest) -> Result<Vec<EntityLink>, ProviderError>;
+}
+
+/// Validates provider-specific external mapping documents.
+pub trait ExternalMappingProvider {
+    fn validate_mapping(&self, mapping_json: &str) -> Result<(), ProviderError>;
 }

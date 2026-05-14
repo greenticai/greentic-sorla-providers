@@ -33,6 +33,21 @@ Each catalog entry includes:
 - config schema path
 - primary artifact URI
 - optional OCI reference
+- optional ontology discovery metadata
+
+## Ontology Discovery Metadata
+
+Catalog entries can include an optional `ontology` section projected from pack manifest `ontology_capabilities`.
+
+The section contains:
+
+- ontology capability declarations
+- maximum traversal depth when relevant
+- whether generic entity refs are supported
+- ontology schema compatibility ranges
+- optional retrieval binding or external mapping schema support
+
+Catalog generation remains manifest-driven, so discovery tools can inspect ontology support without loading provider code.
 
 ## Tagging
 
@@ -42,4 +57,3 @@ Current tags are intentionally simple and machine-friendly:
 - `mock` or `real`
 
 That gives later wizard logic enough signal to filter compatible providers without overdesigning discovery early.
-

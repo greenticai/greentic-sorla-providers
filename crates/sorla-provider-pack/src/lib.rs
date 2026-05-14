@@ -4,7 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sorla_provider_core::{ProviderCapability, ProviderMetadata, ProviderStatus};
+use sorla_provider_core::{
+    ProviderCapability, ProviderMetadata, ProviderOntologyCapabilities, ProviderStatus,
+};
 use thiserror::Error;
 
 /// Reference to a generated provider artifact.
@@ -56,6 +58,8 @@ pub struct ProviderPackManifest {
     pub config_schema: ConfigSchemaRef,
     pub oci_reference: Option<String>,
     pub display: DisplayMetadata,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ontology_capabilities: Option<ProviderOntologyCapabilities>,
 }
 
 /// Serialized local gtpack artifact.
@@ -115,6 +119,7 @@ impl ProviderPackManifest {
                 title: metadata.display_name.clone(),
                 summary: format!("{} provider manifest for SoRLa", metadata.display_name),
             },
+            ontology_capabilities: metadata.ontology_capabilities.clone(),
         }
     }
 
@@ -229,8 +234,8 @@ mod tests {
         write_generated_pack,
     };
     use sorla_provider_core::{
-        ContractCompatibility, ProviderCapability, ProviderMetadata, ProviderStatus,
-        SORLA_PROVIDER_CONTRACT_VERSION,
+        ContractCompatibility, OntologyContractCompatibility, ProviderCapability, ProviderMetadata,
+        ProviderOntologyCapabilities, ProviderStatus, SORLA_PROVIDER_CONTRACT_VERSION,
     };
 
     fn sample_metadata() -> ProviderMetadata {
@@ -250,6 +255,7 @@ mod tests {
                 "0.1",
                 ">=0.1, <0.2",
             ),
+            ontology_capabilities: None,
         }
     }
 
@@ -272,6 +278,30 @@ mod tests {
                 schema_json: r#"{"type":"object","additionalProperties":false}"#.into(),
             },
         )
+    }
+
+    fn sample_ontology_capabilities() -> ProviderOntologyCapabilities {
+        ProviderOntologyCapabilities {
+            schema: "greentic.sorla.provider.ontology-capabilities.v1".into(),
+            compatibility: OntologyContractCompatibility {
+                supported_ontology_schema: "greentic.sorla.ontology.v1".into(),
+                supported_ontology_schema_range: ">=1.0.0, <2.0.0".into(),
+                supported_retrieval_binding_schema: Some(
+                    "greentic.sorla.retrieval-bindings.v1".into(),
+                ),
+                supported_external_mapping_schema: None,
+            },
+            supports_entity_read: true,
+            supports_entity_search: true,
+            supports_relationship_query: false,
+            supports_path_find: false,
+            supports_entity_linking: false,
+            supports_ontology_scoped_evidence: true,
+            supported_concept_types: vec!["EvidenceDocument".into()],
+            supported_relationship_types: vec![],
+            max_traversal_depth: Some(1),
+            supports_policy_context: false,
+        }
     }
 
     #[test]
@@ -306,5 +336,27 @@ mod tests {
         assert!(
             manifest_json.contains("\"provider_id\": \"greentic.sorla.provider.sharepoint-mock\"")
         );
+    }
+
+    #[test]
+    fn pack_manifest_serializes_ontology_metadata_when_present() {
+        let mut metadata = sample_metadata();
+        metadata.ontology_capabilities = Some(sample_ontology_capabilities());
+        let manifest = ProviderPackManifest::from_metadata(
+            &metadata,
+            vec![],
+            vec![],
+            ConfigSchemaRef {
+                format: "json-schema".into(),
+                path: "schemas/provider-config.schema.json".into(),
+                schema_json: r#"{"type":"object"}"#.into(),
+            },
+        );
+
+        let json = serde_json::to_string(&manifest).expect("manifest should serialize");
+
+        assert!(json.contains("ontology_capabilities"));
+        assert!(json.contains("ontology-capabilities.v1"));
+        assert!(json.contains("supported_ontology_schema_range"));
     }
 }

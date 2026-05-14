@@ -7,6 +7,8 @@
     "provider_kind": "external-ref",
     "capabilities": [
       "external-reference-resolve",
+      "external-mapping-validate",
+      "entity-link",
       "health-check",
       "config-validate",
       "pack-metadata-emit"
@@ -39,6 +41,27 @@
     "display": {
       "title": "SharePoint Mock",
       "summary": "SharePoint Mock provider manifest for SoRLa"
+    },
+    "ontology_capabilities": {
+      "schema": "greentic.sorla.provider.ontology-capabilities.v1",
+      "compatibility": {
+        "supported_ontology_schema": "greentic.sorla.ontology.v1",
+        "supported_ontology_schema_range": ">=1.0.0, <2.0.0",
+        "supported_retrieval_binding_schema": null,
+        "supported_external_mapping_schema": "greentic.sorla.external-mapping.v1"
+      },
+      "supports_entity_read": false,
+      "supports_entity_search": false,
+      "supports_relationship_query": false,
+      "supports_path_find": false,
+      "supports_entity_linking": true,
+      "supports_ontology_scoped_evidence": false,
+      "supported_concept_types": [
+        "EvidenceDocument"
+      ],
+      "supported_relationship_types": [],
+      "max_traversal_depth": null,
+      "supports_policy_context": false
     }
   }
 }

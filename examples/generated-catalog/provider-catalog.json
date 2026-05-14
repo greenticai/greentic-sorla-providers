@@ -13,6 +13,12 @@
         "projection-put",
         "projection-rebuild",
         "projection-checkpoint",
+        "entity-read",
+        "entity-search",
+        "relationship-read",
+        "relationship-query",
+        "path-find",
+        "entity-link",
         "health-check",
         "config-validate",
         "pack-metadata-emit"
@@ -28,7 +34,22 @@
       "supported_sorla_ir_range": ">=0.1, <0.2",
       "config_schema_path": "schemas/provider-config.schema.json",
       "artifact_uri": "./greentic-sorla-provider-foundationdb.gtpack.json",
-      "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.4"
+      "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.4",
+      "ontology": {
+        "capabilities": [
+          "entity-read",
+          "entity-search",
+          "relationship-query",
+          "path-find",
+          "entity-link"
+        ],
+        "max_traversal_depth": 8,
+        "supports_generic_entity_refs": true,
+        "supported_ontology_schema": "greentic.sorla.ontology.graph.v1",
+        "supported_ontology_schema_range": ">=1.0.0, <2.0.0",
+        "supported_retrieval_binding_schema": null,
+        "supported_external_mapping_schema": null
+      }
     },
     {
       "provider_id": "greentic.sorla.provider.rag-mock",
@@ -37,6 +58,7 @@
       "capabilities": [
         "evidence-query",
         "evidence-resolve",
+        "ontology-scoped-evidence-query",
         "health-check",
         "config-validate",
         "pack-metadata-emit"
@@ -52,7 +74,18 @@
       "supported_sorla_ir_range": ">=0.1, <0.2",
       "config_schema_path": "schemas/provider-config.schema.json",
       "artifact_uri": "./greentic-sorla-provider-rag-mock.gtpack.json",
-      "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/rag-mock:0.1.4"
+      "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/rag-mock:0.1.4",
+      "ontology": {
+        "capabilities": [
+          "ontology-scoped-evidence-query"
+        ],
+        "max_traversal_depth": 1,
+        "supports_generic_entity_refs": true,
+        "supported_ontology_schema": "greentic.sorla.ontology.v1",
+        "supported_ontology_schema_range": ">=1.0.0, <2.0.0",
+        "supported_retrieval_binding_schema": "greentic.sorla.retrieval-bindings.v1",
+        "supported_external_mapping_schema": null
+      }
     },
     {
       "provider_id": "greentic.sorla.provider.sharepoint-mock",
@@ -60,6 +93,8 @@
       "provider_kind": "external-ref",
       "capabilities": [
         "external-reference-resolve",
+        "external-mapping-validate",
+        "entity-link",
         "health-check",
         "config-validate",
         "pack-metadata-emit"
@@ -75,7 +110,18 @@
       "supported_sorla_ir_range": ">=0.1, <0.2",
       "config_schema_path": "schemas/provider-config.schema.json",
       "artifact_uri": "./greentic-sorla-provider-sharepoint-mock.gtpack.json",
-      "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/sharepoint-mock:0.1.4"
+      "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/sharepoint-mock:0.1.4",
+      "ontology": {
+        "capabilities": [
+          "entity-link"
+        ],
+        "max_traversal_depth": null,
+        "supports_generic_entity_refs": true,
+        "supported_ontology_schema": "greentic.sorla.ontology.v1",
+        "supported_ontology_schema_range": ">=1.0.0, <2.0.0",
+        "supported_retrieval_binding_schema": null,
+        "supported_external_mapping_schema": "greentic.sorla.external-mapping.v1"
+      }
     }
   ]
 }

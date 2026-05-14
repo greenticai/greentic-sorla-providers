@@ -20,6 +20,7 @@ fn metadata_checks_finish_quickly() {
             "0.1",
             ">=0.1, <0.2",
         ),
+        ontology_capabilities: None,
     };
 
     let start = Instant::now();

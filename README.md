@@ -7,7 +7,7 @@ This repository is intentionally organized as a multi-provider family, not as a 
 ## Workspace Layout
 
 - `crates/sorla-provider-core`
-  Shared SoRLa provider contracts, request/response types, error model, compatibility metadata, and provider capability declarations.
+  Shared SoRLa provider contracts, ontology-aware request/response types, error model, compatibility metadata, and provider capability declarations.
 
 - `crates/sorla-provider-pack`
   Canonical local gtpack manifest model and deterministic local pack-generation helpers.
@@ -140,6 +140,14 @@ cargo run -p sorla-provider-catalog-cli
 This generates a deterministic discovery artifact at `examples/generated-catalog/provider-catalog.json` from the checked-in provider pack manifests.
 
 See `docs/catalog.md` for the catalog shape and discovery rationale.
+
+## Ontology-Aware Provider Contracts
+
+`sorla-provider-core` includes generic ontology types for entities, relationships, traversal, path finding, entity linking, external mapping validation, and ontology-scoped evidence queries.
+
+The shared contract is domain-agnostic: fields such as building, floor, customer, account, and tenant identifiers belong in provider-specific metadata or fixtures, not in core request structs.
+
+See `docs/ontology-provider-contract.md` for the core ontology types and trait surface.
 
 ## OCI Release Artifacts
 

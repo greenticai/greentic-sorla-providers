@@ -49,6 +49,20 @@ The canonical manifest currently includes:
 - configuration schema reference
 - optional OCI reference
 - display metadata
+- optional ontology capability metadata
+
+## Ontology Capability Metadata
+
+Providers that implement generic ontology behavior may include an optional `ontology_capabilities` section in their manifest. The section uses schema `greentic.sorla.provider.ontology-capabilities.v1` and advertises implemented behavior only, such as ontology-scoped evidence query support or graph traversal support.
+
+Providers that do not implement ontology behavior omit the section. Consumers should treat absence as no advertised ontology support.
+
+Ontology-aware providers also include compatibility gates in the same section:
+
+- supported ontology schema
+- supported ontology schema range
+- optional retrieval binding schema
+- optional external mapping schema
 
 ## OCI and GHCR
 

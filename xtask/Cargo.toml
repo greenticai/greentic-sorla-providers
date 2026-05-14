@@ -10,6 +10,11 @@ description = "Repository automation for independent SoRLa provider versions and
 publish = false
 
 [dependencies]
+provider-foundationdb = { workspace = true }
+provider-rag-mock = { workspace = true }
+provider-sharepoint-mock = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sorla-provider-catalog = { workspace = true }
+sorla-provider-core = { workspace = true }

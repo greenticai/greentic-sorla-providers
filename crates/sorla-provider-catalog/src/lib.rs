@@ -23,6 +23,20 @@ pub struct ProviderCatalogEntry {
     pub config_schema_path: String,
     pub artifact_uri: Option<String>,
     pub oci_reference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ontology: Option<ProviderCatalogOntology>,
+}
+
+/// Ontology metadata projected from provider pack manifests for discovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCatalogOntology {
+    pub capabilities: Vec<ProviderCapability>,
+    pub max_traversal_depth: Option<u8>,
+    pub supports_generic_entity_refs: bool,
+    pub supported_ontology_schema: String,
+    pub supported_ontology_schema_range: String,
+    pub supported_retrieval_binding_schema: Option<String>,
+    pub supported_external_mapping_schema: Option<String>,
 }
 
 /// Deterministic catalog output for SoRLa wizard discovery.
@@ -52,6 +66,52 @@ fn tags_for_manifest(manifest: &ProviderPackManifest) -> Vec<String> {
     tags
 }
 
+fn ontology_for_manifest(manifest: &ProviderPackManifest) -> Option<ProviderCatalogOntology> {
+    let ontology = manifest.ontology_capabilities.as_ref()?;
+    let mut capabilities = Vec::new();
+
+    if ontology.supports_entity_read {
+        capabilities.push(ProviderCapability::EntityRead);
+    }
+    if ontology.supports_entity_search {
+        capabilities.push(ProviderCapability::EntitySearch);
+    }
+    if ontology.supports_relationship_query {
+        capabilities.push(ProviderCapability::RelationshipQuery);
+    }
+    if ontology.supports_path_find {
+        capabilities.push(ProviderCapability::PathFind);
+    }
+    if ontology.supports_entity_linking {
+        capabilities.push(ProviderCapability::EntityLink);
+    }
+    if ontology.supports_ontology_scoped_evidence {
+        capabilities.push(ProviderCapability::OntologyScopedEvidenceQuery);
+    }
+    if ontology.supports_policy_context {
+        capabilities.push(ProviderCapability::PolicyContextResolve);
+    }
+
+    Some(ProviderCatalogOntology {
+        capabilities,
+        max_traversal_depth: ontology.max_traversal_depth,
+        supports_generic_entity_refs: true,
+        supported_ontology_schema: ontology.compatibility.supported_ontology_schema.clone(),
+        supported_ontology_schema_range: ontology
+            .compatibility
+            .supported_ontology_schema_range
+            .clone(),
+        supported_retrieval_binding_schema: ontology
+            .compatibility
+            .supported_retrieval_binding_schema
+            .clone(),
+        supported_external_mapping_schema: ontology
+            .compatibility
+            .supported_external_mapping_schema
+            .clone(),
+    })
+}
+
 impl ProviderCatalog {
     pub fn from_manifests(manifests: &[ProviderPackManifest]) -> Self {
         let mut entries = manifests
@@ -75,6 +135,7 @@ impl ProviderCatalog {
                     .first()
                     .map(|item| item.uri.clone()),
                 oci_reference: manifest.oci_reference.clone(),
+                ontology: ontology_for_manifest(manifest),
             })
             .collect::<Vec<_>>();
 
@@ -114,8 +175,8 @@ mod tests {
 
     use super::{ProviderCatalog, read_manifest, write_catalog};
     use sorla_provider_core::{
-        ContractCompatibility, ProviderCapability, ProviderMetadata, ProviderStatus,
-        SORLA_PROVIDER_CONTRACT_VERSION,
+        ContractCompatibility, OntologyContractCompatibility, ProviderCapability, ProviderMetadata,
+        ProviderOntologyCapabilities, ProviderStatus, SORLA_PROVIDER_CONTRACT_VERSION,
     };
     use sorla_provider_pack::{
         ArtifactReference, ConfigSchemaRef, ProviderPackManifest, RuntimeComponentRef,
@@ -137,6 +198,7 @@ mod tests {
                     "0.1",
                     ">=0.1, <0.2",
                 ),
+                ontology_capabilities: None,
             },
             vec![ArtifactReference {
                 kind: "gtpack-json".into(),
@@ -154,6 +216,35 @@ mod tests {
                 schema_json: r#"{"type":"object","additionalProperties":false}"#.into(),
             },
         )
+    }
+
+    fn ontology_manifest(provider_id: &str) -> ProviderPackManifest {
+        let mut manifest = manifest(provider_id, "evidence", true);
+        manifest
+            .capabilities
+            .push(ProviderCapability::OntologyScopedEvidenceQuery);
+        manifest.ontology_capabilities = Some(ProviderOntologyCapabilities {
+            schema: "greentic.sorla.provider.ontology-capabilities.v1".into(),
+            compatibility: OntologyContractCompatibility {
+                supported_ontology_schema: "greentic.sorla.ontology.v1".into(),
+                supported_ontology_schema_range: ">=1.0.0, <2.0.0".into(),
+                supported_retrieval_binding_schema: Some(
+                    "greentic.sorla.retrieval-bindings.v1".into(),
+                ),
+                supported_external_mapping_schema: None,
+            },
+            supports_entity_read: false,
+            supports_entity_search: false,
+            supports_relationship_query: false,
+            supports_path_find: false,
+            supports_entity_linking: false,
+            supports_ontology_scoped_evidence: true,
+            supported_concept_types: vec!["EvidenceDocument".into()],
+            supported_relationship_types: vec![],
+            max_traversal_depth: Some(1),
+            supports_policy_context: false,
+        });
+        manifest
     }
 
     #[test]
@@ -188,5 +279,27 @@ mod tests {
         let written = write_catalog(&catalog_root, &catalog).expect("catalog write should work");
 
         assert!(written.catalog_path.exists());
+    }
+
+    #[test]
+    fn catalog_serializes_ontology_metadata_from_manifest() {
+        let catalog = ProviderCatalog::from_manifests(&[ontology_manifest("provider-ontology")]);
+
+        let entry = &catalog.entries[0];
+        let ontology = entry.ontology.as_ref().expect("ontology metadata");
+        assert_eq!(
+            ontology.capabilities,
+            vec![ProviderCapability::OntologyScopedEvidenceQuery]
+        );
+        assert_eq!(ontology.max_traversal_depth, Some(1));
+        assert!(ontology.supports_generic_entity_refs);
+        assert_eq!(
+            ontology.supported_ontology_schema,
+            "greentic.sorla.ontology.v1"
+        );
+        assert_eq!(
+            ontology.supported_retrieval_binding_schema.as_deref(),
+            Some("greentic.sorla.retrieval-bindings.v1")
+        );
     }
 }
