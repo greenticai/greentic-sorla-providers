@@ -1,12 +1,12 @@
 #![forbid(unsafe_code)]
 
 use serde::{Deserialize, Serialize};
-use sorla_provider_catalog::ProviderCatalogEntry;
+use sorla_provider_catalog::{ProviderCatalogEntry, ProviderCatalogOntology};
 use sorla_provider_core::{
-    ConfigValidator, ContractCompatibility, EvidenceItem, EvidenceProvider, EvidenceQuery,
-    EvidenceQueryFilter, HealthReport, HealthState, PackEmission, ProviderCapability,
-    ProviderHealth, ProviderMetadata, ProviderMetadataSource, ProviderStatus,
-    SORLA_PROVIDER_CONTRACT_VERSION,
+    ConfigValidator, ContractCompatibility, EntityLink, EntityRef, EvidenceItem, EvidenceProvider,
+    EvidenceQuery, EvidenceQueryFilter, HealthReport, HealthState, OntologyContractCompatibility,
+    PackEmission, ProviderCapability, ProviderHealth, ProviderMetadata, ProviderMetadataSource,
+    ProviderOntologyCapabilities, ProviderStatus, RelationshipRef, SORLA_PROVIDER_CONTRACT_VERSION,
 };
 use sorla_provider_pack::{
     ArtifactReference, ConfigSchemaRef, ProviderPackManifest, provider_artifact_file_uri,
@@ -114,25 +114,33 @@ impl RagMockProvider {
     }
 
     fn matches_filter(doc: &RagSeedDocument, filter: &EvidenceQueryFilter) -> bool {
-        if let Some(building) = &filter.building_id
-            && &doc.building_id != building
+        if !filter.document_types.is_empty()
+            && !filter
+                .document_types
+                .iter()
+                .any(|document_type| document_type == &doc.document_type)
         {
             return false;
         }
-        if let Some(floor) = &filter.floor_id
-            && doc.floor_id.as_ref() != Some(floor)
+        if !filter.source_types.is_empty()
+            && !filter
+                .source_types
+                .iter()
+                .any(|source_type| source_type == &doc.source_type)
         {
             return false;
         }
-        if let Some(document_type) = &filter.document_type
-            && &doc.document_type != document_type
+        if let Some(scope) = &filter.ontology_scope
+            && !scope.root_entities.is_empty()
         {
-            return false;
-        }
-        if let Some(source_type) = &filter.source_type
-            && &doc.source_type != source_type
-        {
-            return false;
+            let matches_entity = scope.root_entities.iter().any(|entity| {
+                entity.entity_id == doc.building_id
+                    || doc.floor_id.as_ref() == Some(&entity.entity_id)
+                    || entity.entity_id == doc.document_id
+            });
+            if !matches_entity {
+                return false;
+            }
         }
         true
     }
@@ -196,6 +204,65 @@ impl RagMockProvider {
             "title": doc.title,
         })
         .to_string();
+        let building = EntityRef {
+            entity_type: "Building".into(),
+            entity_id: doc.building_id.clone(),
+            namespace: Some("rag-mock".into()),
+            version: None,
+        };
+        let document = EntityRef {
+            entity_type: "EvidenceDocument".into(),
+            entity_id: doc.document_id.clone(),
+            namespace: Some("rag-mock".into()),
+            version: None,
+        };
+        let mut linked_entities = vec![
+            EntityLink {
+                entity: building.clone(),
+                source_ref: source_ref.clone(),
+                evidence_id: Some(evidence_id.clone()),
+                confidence: 1.0,
+                match_kind: "fixture-metadata".into(),
+                provenance: "rag-mock deterministic seed".into(),
+                metadata_json: Some(metadata_json.clone()),
+            },
+            EntityLink {
+                entity: document.clone(),
+                source_ref: source_ref.clone(),
+                evidence_id: Some(evidence_id.clone()),
+                confidence: 1.0,
+                match_kind: "document-id".into(),
+                provenance: "rag-mock deterministic seed".into(),
+                metadata_json: Some(metadata_json.clone()),
+            },
+        ];
+        if let Some(floor_id) = &doc.floor_id {
+            linked_entities.push(EntityLink {
+                entity: EntityRef {
+                    entity_type: "Floor".into(),
+                    entity_id: floor_id.clone(),
+                    namespace: Some("rag-mock".into()),
+                    version: None,
+                },
+                source_ref: source_ref.clone(),
+                evidence_id: Some(evidence_id.clone()),
+                confidence: 1.0,
+                match_kind: "fixture-metadata".into(),
+                provenance: "rag-mock deterministic seed".into(),
+                metadata_json: Some(metadata_json.clone()),
+            });
+        }
+        linked_entities.sort_by(|left, right| {
+            left.entity
+                .entity_type
+                .cmp(&right.entity.entity_type)
+                .then_with(|| left.entity.entity_id.cmp(&right.entity.entity_id))
+        });
+        let relationship_context = vec![RelationshipRef {
+            relationship_type: "supports".into(),
+            from: document,
+            to: building,
+        }];
 
         EvidenceItem {
             evidence_id,
@@ -209,6 +276,15 @@ impl RagMockProvider {
             score: self.score_for(query, doc),
             provenance,
             metadata_json,
+            linked_entities,
+            relationship_context,
+            permissions_context_json: Some(
+                serde_json::json!({
+                    "sensitivity": "internal",
+                    "source_type": doc.source_type,
+                })
+                .to_string(),
+            ),
         }
     }
 }
@@ -225,6 +301,7 @@ impl ProviderMetadataSource for RagMockProvider {
             capabilities: vec![
                 ProviderCapability::EvidenceQuery,
                 ProviderCapability::EvidenceResolve,
+                ProviderCapability::OntologyScopedEvidenceQuery,
                 ProviderCapability::HealthCheck,
                 ProviderCapability::ConfigValidate,
                 ProviderCapability::PackMetadataEmit,
@@ -234,6 +311,31 @@ impl ProviderMetadataSource for RagMockProvider {
                 "0.1",
                 ">=0.1, <0.2",
             ),
+            ontology_capabilities: Some(ProviderOntologyCapabilities {
+                schema: "greentic.sorla.provider.ontology-capabilities.v1".into(),
+                compatibility: OntologyContractCompatibility {
+                    supported_ontology_schema: "greentic.sorla.ontology.v1".into(),
+                    supported_ontology_schema_range: ">=1.0.0, <2.0.0".into(),
+                    supported_retrieval_binding_schema: Some(
+                        "greentic.sorla.retrieval-bindings.v1".into(),
+                    ),
+                    supported_external_mapping_schema: None,
+                },
+                supports_entity_read: false,
+                supports_entity_search: false,
+                supports_relationship_query: false,
+                supports_path_find: false,
+                supports_entity_linking: false,
+                supports_ontology_scoped_evidence: true,
+                supported_concept_types: vec![
+                    "Building".into(),
+                    "Floor".into(),
+                    "EvidenceDocument".into(),
+                ],
+                supported_relationship_types: vec![],
+                max_traversal_depth: Some(1),
+                supports_policy_context: false,
+            }),
         }
     }
 
@@ -345,6 +447,29 @@ pub fn catalog_entry() -> ProviderCatalogEntry {
             .first()
             .map(|item| item.uri.clone()),
         oci_reference: manifest.oci_reference,
+        ontology: manifest.ontology_capabilities.as_ref().map(|capabilities| {
+            ProviderCatalogOntology {
+                capabilities: vec![ProviderCapability::OntologyScopedEvidenceQuery],
+                max_traversal_depth: capabilities.max_traversal_depth,
+                supports_generic_entity_refs: true,
+                supported_ontology_schema: capabilities
+                    .compatibility
+                    .supported_ontology_schema
+                    .clone(),
+                supported_ontology_schema_range: capabilities
+                    .compatibility
+                    .supported_ontology_schema_range
+                    .clone(),
+                supported_retrieval_binding_schema: capabilities
+                    .compatibility
+                    .supported_retrieval_binding_schema
+                    .clone(),
+                supported_external_mapping_schema: capabilities
+                    .compatibility
+                    .supported_external_mapping_schema
+                    .clone(),
+            }
+        }),
     }
 }
 
@@ -352,18 +477,30 @@ pub fn catalog_entry() -> ProviderCatalogEntry {
 mod tests {
     use super::{RagMockProvider, catalog_entry, pack_manifest};
     use sorla_provider_core::{
-        ConfigValidator, EvidenceProvider, EvidenceQuery, EvidenceQueryFilter, ProviderCapability,
-        ProviderHealth, ProviderMetadataSource,
+        ConfigValidator, EntityRef, EvidenceProvider, EvidenceQuery, EvidenceQueryFilter,
+        OntologyScope, ProviderCapability, ProviderHealth, ProviderMetadataSource,
     };
 
     fn base_query() -> EvidenceQuery {
         EvidenceQuery {
             query: "Show BTG and RFI evidence for building-kafd-01 floor-07 smoke control".into(),
             filter: EvidenceQueryFilter {
-                building_id: Some("building-kafd-01".into()),
-                floor_id: Some("floor-07".into()),
-                document_type: None,
-                source_type: None,
+                ontology_scope: Some(OntologyScope {
+                    root_entities: vec![EntityRef {
+                        entity_type: "Building".into(),
+                        entity_id: "building-kafd-01".into(),
+                        namespace: None,
+                        version: None,
+                    }],
+                    include_related: vec![],
+                    max_depth: Some(1),
+                    include_evidence_links: true,
+                }),
+                source_types: vec![],
+                document_types: vec![],
+                metadata_json: None,
+                time_range: None,
+                sensitivity_max: None,
             },
             limit: 5,
         }
@@ -417,14 +554,17 @@ mod tests {
         assert_eq!(first, second);
         assert!(!first.is_empty());
         assert!(first[0].provenance.contains("source="));
+        assert!(!first[0].linked_entities.is_empty());
+        assert!(!first[0].relationship_context.is_empty());
+        assert!(first[0].permissions_context_json.is_some());
     }
 
     #[test]
     fn rag_mock_applies_source_and_document_filters() {
         let provider = RagMockProvider::for_tests();
         let mut query = base_query();
-        query.filter.document_type = Some("btg".into());
-        query.filter.source_type = Some("btg".into());
+        query.filter.document_types = vec!["btg".into()];
+        query.filter.source_types = vec!["btg".into()];
 
         let items = provider
             .query_evidence(query)
@@ -445,5 +585,55 @@ mod tests {
             .expect("limited query should succeed");
 
         assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn rag_mock_filters_by_generic_entity_scope() {
+        let provider = RagMockProvider::for_tests();
+        let mut query = base_query();
+        query.filter.ontology_scope = Some(OntologyScope {
+            root_entities: vec![EntityRef {
+                entity_type: "EvidenceDocument".into(),
+                entity_id: "btg-building-kafd-02".into(),
+                namespace: None,
+                version: None,
+            }],
+            include_related: vec![],
+            max_depth: Some(1),
+            include_evidence_links: true,
+        });
+
+        let items = provider
+            .query_evidence(query)
+            .expect("entity scoped query should succeed");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].document_id, "btg-building-kafd-02");
+    }
+
+    #[test]
+    fn rag_mock_exposes_linked_entities_and_relationship_context() {
+        let provider = RagMockProvider::for_tests();
+        let item = provider
+            .query_evidence(base_query())
+            .expect("query should succeed")
+            .into_iter()
+            .next()
+            .expect("result should exist");
+
+        assert!(item.linked_entities.iter().any(|link| {
+            link.entity.entity_type == "EvidenceDocument"
+                && link.evidence_id == Some(item.evidence_id.clone())
+        }));
+        assert!(
+            item.relationship_context
+                .iter()
+                .any(|relationship| relationship.relationship_type == "supports")
+        );
+        assert!(
+            item.permissions_context_json
+                .as_deref()
+                .is_some_and(|context| context.contains("internal"))
+        );
     }
 }

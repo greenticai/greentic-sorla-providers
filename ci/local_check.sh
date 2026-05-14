@@ -97,6 +97,9 @@ if [[ "$run_full" -eq 1 ]]; then
     print_step "cargo test"
     cargo test --all-features
 
+    print_step "ontology smoke"
+    cargo xtask ontology-smoke
+
     print_step "cargo build"
     cargo build --all-features
 

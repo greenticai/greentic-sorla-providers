@@ -26,6 +26,7 @@ fn run_workload(threads: usize) -> Duration {
                         "0.1",
                         ">=0.1, <0.2",
                     ),
+                    ontology_capabilities: None,
                 };
 
                 for _ in 0..50_000 {

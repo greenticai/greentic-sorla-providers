@@ -4,13 +4,16 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
-use sorla_provider_catalog::ProviderCatalogEntry;
+use sorla_provider_catalog::{ProviderCatalogEntry, ProviderCatalogOntology};
 use sorla_provider_core::{
-    AppendEventRequest, ConfigValidator, ContractCompatibility, EventRecord, EventStoreProvider,
-    EventStreamRequest, HealthReport, HealthState, PackEmission, PersistProjectionRequest,
-    ProjectionCheckpoint, ProjectionProvider, ProjectionRebuildRequest, ProjectionRecord,
-    ProviderCapability, ProviderError, ProviderHealth, ProviderMetadata, ProviderMetadataSource,
-    ProviderStatus, SORLA_PROVIDER_CONTRACT_VERSION,
+    AppendEventRequest, ConfigValidator, ContractCompatibility, EntityLink, EntityLinkProvider,
+    EntityLinkRequest, EntityRecord, EntityRef, EntitySearchQuery, EntityStoreProvider,
+    EventRecord, EventStoreProvider, EventStreamRequest, HealthReport, HealthState,
+    OntologyContractCompatibility, OntologyPath, OntologyPathStep, PackEmission, PathQuery,
+    PersistProjectionRequest, ProjectionCheckpoint, ProjectionProvider, ProjectionRebuildRequest,
+    ProjectionRecord, ProviderCapability, ProviderError, ProviderHealth, ProviderMetadata,
+    ProviderMetadataSource, ProviderOntologyCapabilities, ProviderStatus, RelationshipDirection,
+    RelationshipInstance, RelationshipQuery, SORLA_PROVIDER_CONTRACT_VERSION,
 };
 use sorla_provider_pack::{
     ArtifactReference, ConfigSchemaRef, ProviderPackManifest, provider_artifact_file_uri,
@@ -34,6 +37,12 @@ pub struct KeyspaceLayout {
     pub metadata_prefix: String,
     pub checkpoints_prefix: String,
     pub compatibility_prefix: String,
+    pub ontology_model_prefix: String,
+    pub entities_prefix: String,
+    pub relationships_prefix: String,
+    pub relationship_from_index_prefix: String,
+    pub relationship_to_index_prefix: String,
+    pub evidence_links_prefix: String,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +55,9 @@ struct ProjectionState {
 struct InMemoryFoundationDb {
     streams: HashMap<String, Vec<EventRecord>>,
     projections: HashMap<(String, String), ProjectionState>,
+    entities: HashMap<String, EntityRecord>,
+    relationships: Vec<RelationshipInstance>,
+    evidence_links: HashMap<String, Vec<EntityLink>>,
 }
 
 impl InMemoryFoundationDb {
@@ -99,7 +111,114 @@ impl FoundationDbProvider {
             metadata_prefix: format!("{prefix}/metadata"),
             checkpoints_prefix: format!("{prefix}/checkpoints"),
             compatibility_prefix: format!("{prefix}/compatibility"),
+            ontology_model_prefix: format!("{prefix}/ontology/model"),
+            entities_prefix: format!("{prefix}/entities"),
+            relationships_prefix: format!("{prefix}/relationships"),
+            relationship_from_index_prefix: format!("{prefix}/relationship-index/from"),
+            relationship_to_index_prefix: format!("{prefix}/relationship-index/to"),
+            evidence_links_prefix: format!("{prefix}/evidence-links"),
         }
+    }
+
+    fn entity_key(entity: &EntityRef) -> String {
+        format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            entity.namespace.as_deref().unwrap_or_default(),
+            entity.entity_type,
+            entity.entity_id,
+            entity.version.as_deref().unwrap_or_default()
+        )
+    }
+
+    fn relationship_key(relationship: &RelationshipInstance) -> String {
+        let rel = &relationship.relationship;
+        format!(
+            "{}\u{1f}{}\u{1f}{}",
+            rel.relationship_type,
+            Self::entity_key(&rel.from),
+            Self::entity_key(&rel.to)
+        )
+    }
+
+    fn sorted_relationships(
+        relationships: impl IntoIterator<Item = RelationshipInstance>,
+    ) -> Vec<RelationshipInstance> {
+        let mut relationships = relationships.into_iter().collect::<Vec<_>>();
+        relationships.sort_by_key(Self::relationship_key);
+        relationships
+    }
+
+    pub fn upsert_relationship(
+        &self,
+        relationship: RelationshipInstance,
+    ) -> Result<RelationshipInstance, ProviderError> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+
+        let key = Self::relationship_key(&relationship);
+        if let Some(existing) = state
+            .relationships
+            .iter_mut()
+            .find(|stored| Self::relationship_key(stored) == key)
+        {
+            *existing = relationship.clone();
+        } else {
+            state.relationships.push(relationship.clone());
+        }
+
+        Ok(relationship)
+    }
+
+    pub fn upsert_evidence_link(&self, link: EntityLink) -> Result<EntityLink, ProviderError> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+
+        let entity_key = Self::entity_key(&link.entity);
+        let links = state.evidence_links.entry(entity_key).or_default();
+        let link_key = (
+            link.source_ref.clone(),
+            link.evidence_id.clone(),
+            link.match_kind.clone(),
+        );
+        if let Some(existing) = links.iter_mut().find(|stored| {
+            (
+                stored.source_ref.clone(),
+                stored.evidence_id.clone(),
+                stored.match_kind.clone(),
+            ) == link_key
+        }) {
+            *existing = link.clone();
+        } else {
+            links.push(link.clone());
+        }
+
+        Ok(link)
+    }
+
+    pub fn evidence_links_for_entity(
+        &self,
+        entity: &EntityRef,
+    ) -> Result<Vec<EntityLink>, ProviderError> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+        let mut links = state
+            .evidence_links
+            .get(&Self::entity_key(entity))
+            .cloned()
+            .unwrap_or_default();
+        links.sort_by(|left, right| {
+            left.source_ref
+                .cmp(&right.source_ref)
+                .then_with(|| left.evidence_id.cmp(&right.evidence_id))
+                .then_with(|| left.match_kind.cmp(&right.match_kind))
+        });
+        Ok(links)
     }
 
     pub fn projection_checkpoint(
@@ -138,6 +257,12 @@ impl ProviderMetadataSource for FoundationDbProvider {
                 ProviderCapability::ProjectionPut,
                 ProviderCapability::ProjectionRebuild,
                 ProviderCapability::ProjectionCheckpoint,
+                ProviderCapability::EntityRead,
+                ProviderCapability::EntitySearch,
+                ProviderCapability::RelationshipRead,
+                ProviderCapability::RelationshipQuery,
+                ProviderCapability::PathFind,
+                ProviderCapability::EntityLink,
                 ProviderCapability::HealthCheck,
                 ProviderCapability::ConfigValidate,
                 ProviderCapability::PackMetadataEmit,
@@ -147,6 +272,25 @@ impl ProviderMetadataSource for FoundationDbProvider {
                 "0.1",
                 ">=0.1, <0.2",
             ),
+            ontology_capabilities: Some(ProviderOntologyCapabilities {
+                schema: "greentic.sorla.provider.ontology-capabilities.v1".into(),
+                compatibility: OntologyContractCompatibility {
+                    supported_ontology_schema: "greentic.sorla.ontology.graph.v1".into(),
+                    supported_ontology_schema_range: ">=1.0.0, <2.0.0".into(),
+                    supported_retrieval_binding_schema: None,
+                    supported_external_mapping_schema: None,
+                },
+                supports_entity_read: true,
+                supports_entity_search: true,
+                supports_relationship_query: true,
+                supports_path_find: true,
+                supports_entity_linking: true,
+                supports_ontology_scoped_evidence: false,
+                supported_concept_types: vec!["*".into()],
+                supported_relationship_types: vec!["*".into()],
+                max_traversal_depth: Some(8),
+                supports_policy_context: false,
+            }),
         }
     }
 
@@ -318,6 +462,232 @@ impl ProjectionProvider for FoundationDbProvider {
     }
 }
 
+impl EntityStoreProvider for FoundationDbProvider {
+    fn upsert_entity(&self, entity: EntityRecord) -> Result<EntityRecord, ProviderError> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+
+        state
+            .entities
+            .insert(Self::entity_key(&entity.entity), entity.clone());
+        Ok(entity)
+    }
+
+    fn get_entity(&self, entity: EntityRef) -> Result<Option<EntityRecord>, ProviderError> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+
+        Ok(state.entities.get(&Self::entity_key(&entity)).cloned())
+    }
+
+    fn search_entities(
+        &self,
+        request: EntitySearchQuery,
+    ) -> Result<Vec<EntityRecord>, ProviderError> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+
+        let mut entities = state
+            .entities
+            .values()
+            .filter(|record| {
+                request.entity_types.is_empty()
+                    || request
+                        .entity_types
+                        .iter()
+                        .any(|entity_type| entity_type == &record.entity.entity_type)
+            })
+            .filter(|record| {
+                request.namespace.is_none()
+                    || record.entity.namespace.as_ref() == request.namespace.as_ref()
+            })
+            .filter(|record| {
+                request.query.as_ref().is_none_or(|query| {
+                    record.entity.entity_id.contains(query)
+                        || record
+                            .label
+                            .as_ref()
+                            .is_some_and(|label| label.contains(query))
+                        || record
+                            .metadata_json
+                            .as_ref()
+                            .is_some_and(|metadata| metadata.contains(query))
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        entities.sort_by_key(|record| {
+            (
+                record.entity.entity_type.clone(),
+                record.entity.entity_id.clone(),
+                record.entity.namespace.clone(),
+                record.entity.version.clone(),
+            )
+        });
+        entities.truncate(request.limit);
+        Ok(entities)
+    }
+}
+
+impl sorla_provider_core::OntologyGraphProvider for FoundationDbProvider {
+    fn query_relationships(
+        &self,
+        request: RelationshipQuery,
+    ) -> Result<Vec<RelationshipInstance>, ProviderError> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+        let root_keys = request
+            .root_entities
+            .iter()
+            .map(Self::entity_key)
+            .collect::<Vec<_>>();
+        let mut relationships = Self::sorted_relationships(
+            state
+                .relationships
+                .iter()
+                .filter(|relationship| {
+                    request
+                        .relationship_type
+                        .as_ref()
+                        .is_none_or(|relationship_type| {
+                            relationship.relationship.relationship_type == *relationship_type
+                        })
+                        && (root_keys.is_empty()
+                            || match request.direction {
+                                RelationshipDirection::Outgoing => root_keys
+                                    .contains(&Self::entity_key(&relationship.relationship.from)),
+                                RelationshipDirection::Incoming => root_keys
+                                    .contains(&Self::entity_key(&relationship.relationship.to)),
+                                RelationshipDirection::Both => {
+                                    root_keys.contains(&Self::entity_key(
+                                        &relationship.relationship.from,
+                                    )) || root_keys
+                                        .contains(&Self::entity_key(&relationship.relationship.to))
+                                }
+                            })
+                })
+                .cloned(),
+        );
+        relationships.truncate(request.limit);
+        Ok(relationships)
+    }
+
+    fn find_paths(&self, request: PathQuery) -> Result<Vec<OntologyPath>, ProviderError> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+        let relationships = Self::sorted_relationships(state.relationships.clone());
+        let target_key = Self::entity_key(&request.to);
+        let mut paths = Vec::new();
+        let mut queue = vec![(request.from.clone(), Vec::<OntologyPathStep>::new())];
+
+        while let Some((current, steps)) = queue.pop() {
+            if paths.len() >= request.limit {
+                break;
+            }
+            if steps.len() >= usize::from(request.max_depth) {
+                continue;
+            }
+
+            let current_key = Self::entity_key(&current);
+            for relationship in relationships.iter().filter(|relationship| {
+                Self::entity_key(&relationship.relationship.from) == current_key
+                    && (request.relationship_types.is_empty()
+                        || request.relationship_types.iter().any(|relationship_type| {
+                            relationship_type == &relationship.relationship.relationship_type
+                        }))
+            }) {
+                let next = relationship.relationship.to.clone();
+                let next_key = Self::entity_key(&next);
+                if steps.iter().any(|step| {
+                    Self::entity_key(&step.relationship.from) == next_key
+                        || Self::entity_key(&step.relationship.to) == next_key
+                }) || Self::entity_key(&request.from) == next_key
+                {
+                    continue;
+                }
+
+                let mut next_steps = steps.clone();
+                next_steps.push(OntologyPathStep {
+                    relationship: relationship.relationship.clone(),
+                    direction: RelationshipDirection::Outgoing,
+                });
+
+                if next_key == target_key {
+                    paths.push(OntologyPath {
+                        start: request.from.clone(),
+                        end: request.to.clone(),
+                        steps: next_steps,
+                    });
+                } else {
+                    queue.insert(0, (next, next_steps));
+                }
+            }
+        }
+
+        paths.sort_by_key(|path| {
+            path.steps
+                .iter()
+                .map(|step| {
+                    Self::relationship_key(&RelationshipInstance {
+                        relationship: step.relationship.clone(),
+                        metadata_json: None,
+                        provenance: None,
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+        Ok(paths)
+    }
+}
+
+impl EntityLinkProvider for FoundationDbProvider {
+    fn link_entities(&self, request: EntityLinkRequest) -> Result<Vec<EntityLink>, ProviderError> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+        let mut links = state
+            .evidence_links
+            .values()
+            .flat_map(|items| items.iter())
+            .filter(|link| {
+                request
+                    .source_ref
+                    .as_ref()
+                    .is_none_or(|source_ref| &link.source_ref == source_ref)
+                    && request
+                        .evidence_id
+                        .as_ref()
+                        .is_none_or(|evidence_id| link.evidence_id.as_ref() == Some(evidence_id))
+                    && (request.candidate_types.is_empty()
+                        || request
+                            .candidate_types
+                            .iter()
+                            .any(|candidate_type| candidate_type == &link.entity.entity_type))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        links.sort_by(|left, right| {
+            Self::entity_key(&left.entity)
+                .cmp(&Self::entity_key(&right.entity))
+                .then_with(|| left.source_ref.cmp(&right.source_ref))
+                .then_with(|| left.evidence_id.cmp(&right.evidence_id))
+        });
+        Ok(links)
+    }
+}
+
 pub fn pack_manifest() -> ProviderPackManifest {
     let provider = FoundationDbProvider::for_tests();
     ProviderPackManifest::from_metadata(
@@ -359,6 +729,35 @@ pub fn catalog_entry() -> ProviderCatalogEntry {
             .first()
             .map(|item| item.uri.clone()),
         oci_reference: manifest.oci_reference,
+        ontology: manifest.ontology_capabilities.as_ref().map(|capabilities| {
+            ProviderCatalogOntology {
+                capabilities: vec![
+                    ProviderCapability::EntityRead,
+                    ProviderCapability::EntitySearch,
+                    ProviderCapability::RelationshipQuery,
+                    ProviderCapability::PathFind,
+                    ProviderCapability::EntityLink,
+                ],
+                max_traversal_depth: capabilities.max_traversal_depth,
+                supports_generic_entity_refs: true,
+                supported_ontology_schema: capabilities
+                    .compatibility
+                    .supported_ontology_schema
+                    .clone(),
+                supported_ontology_schema_range: capabilities
+                    .compatibility
+                    .supported_ontology_schema_range
+                    .clone(),
+                supported_retrieval_binding_schema: capabilities
+                    .compatibility
+                    .supported_retrieval_binding_schema
+                    .clone(),
+                supported_external_mapping_schema: capabilities
+                    .compatibility
+                    .supported_external_mapping_schema
+                    .clone(),
+            }
+        }),
     }
 }
 
@@ -368,10 +767,37 @@ mod tests {
 
     use super::{FoundationDbConfig, FoundationDbProvider, catalog_entry, pack_manifest};
     use sorla_provider_core::{
-        AppendEventRequest, ConfigValidator, EventStoreProvider, PersistProjectionRequest,
-        ProjectionProvider, ProjectionRebuildRequest, ProviderCapability, ProviderHealth,
-        ProviderMetadataSource,
+        AppendEventRequest, ConfigValidator, EntityLink, EntityLinkProvider, EntityLinkRequest,
+        EntityRecord, EntityRef, EntitySearchQuery, EntityStoreProvider, EventStoreProvider,
+        OntologyGraphProvider, PathQuery, PersistProjectionRequest, ProjectionProvider,
+        ProjectionRebuildRequest, ProviderCapability, ProviderHealth, ProviderMetadataSource,
+        RelationshipDirection, RelationshipInstance, RelationshipQuery, RelationshipRef,
     };
+
+    fn entity(entity_type: &str, entity_id: &str) -> EntityRef {
+        EntityRef {
+            entity_type: entity_type.into(),
+            entity_id: entity_id.into(),
+            namespace: Some("test".into()),
+            version: None,
+        }
+    }
+
+    fn relationship(
+        relationship_type: &str,
+        from: EntityRef,
+        to: EntityRef,
+    ) -> RelationshipInstance {
+        RelationshipInstance {
+            relationship: RelationshipRef {
+                relationship_type: relationship_type.into(),
+                from,
+                to,
+            },
+            metadata_json: None,
+            provenance: Some("test".into()),
+        }
+    }
 
     #[test]
     fn foundationdb_provider_advertises_event_capabilities() {
@@ -380,6 +806,15 @@ mod tests {
         assert!(metadata.supports(ProviderCapability::EventAppend));
         assert!(metadata.supports(ProviderCapability::ProjectionCheckpoint));
         assert!(metadata.supports(ProviderCapability::ProjectionPut));
+        assert!(metadata.supports(ProviderCapability::EntityRead));
+        assert!(metadata.supports(ProviderCapability::RelationshipQuery));
+        assert!(metadata.supports(ProviderCapability::PathFind));
+        assert!(
+            metadata
+                .ontology_capabilities
+                .as_ref()
+                .is_some_and(|capabilities| capabilities.supports_path_find)
+        );
     }
 
     #[test]
@@ -523,6 +958,12 @@ mod tests {
             layout.metadata_prefix,
             layout.checkpoints_prefix,
             layout.compatibility_prefix,
+            layout.ontology_model_prefix,
+            layout.entities_prefix,
+            layout.relationships_prefix,
+            layout.relationship_from_index_prefix,
+            layout.relationship_to_index_prefix,
+            layout.evidence_links_prefix,
         ];
 
         let unique = prefixes.iter().collect::<BTreeSet<_>>();
@@ -532,5 +973,154 @@ mod tests {
                 .iter()
                 .all(|prefix| prefix.starts_with("tenant/acme/"))
         );
+    }
+
+    #[test]
+    fn entities_can_be_inserted_read_and_searched() {
+        let provider = FoundationDbProvider::for_tests();
+        let customer = EntityRecord {
+            entity: entity("Customer", "customer-001"),
+            label: Some("Acme Customer".into()),
+            metadata_json: Some(r#"{"segment":"enterprise"}"#.into()),
+        };
+
+        provider
+            .upsert_entity(customer.clone())
+            .expect("entity upsert should succeed");
+        let stored = provider
+            .get_entity(customer.entity.clone())
+            .expect("entity read should succeed")
+            .expect("entity should exist");
+        let found = provider
+            .search_entities(EntitySearchQuery {
+                entity_types: vec!["Customer".into()],
+                query: Some("Acme".into()),
+                namespace: Some("test".into()),
+                metadata_json: None,
+                limit: 10,
+            })
+            .expect("entity search should succeed");
+
+        assert_eq!(stored, customer);
+        assert_eq!(found, vec![customer]);
+    }
+
+    #[test]
+    fn relationships_query_by_direction_and_type() {
+        let provider = FoundationDbProvider::for_tests();
+        let customer = entity("Customer", "customer-001");
+        let contract = entity("Contract", "contract-001");
+        let asset = entity("Asset", "asset-001");
+
+        provider
+            .upsert_relationship(relationship(
+                "has_contract",
+                customer.clone(),
+                contract.clone(),
+            ))
+            .expect("relationship upsert should succeed");
+        provider
+            .upsert_relationship(relationship("governs", contract.clone(), asset))
+            .expect("relationship upsert should succeed");
+
+        let outgoing = provider
+            .query_relationships(RelationshipQuery {
+                root_entities: vec![customer.clone()],
+                relationship_type: Some("has_contract".into()),
+                direction: RelationshipDirection::Outgoing,
+                max_depth: Some(1),
+                limit: 10,
+            })
+            .expect("outgoing query should succeed");
+        let incoming = provider
+            .query_relationships(RelationshipQuery {
+                root_entities: vec![contract.clone()],
+                relationship_type: Some("has_contract".into()),
+                direction: RelationshipDirection::Incoming,
+                max_depth: Some(1),
+                limit: 10,
+            })
+            .expect("incoming query should succeed");
+
+        assert_eq!(outgoing.len(), 1);
+        assert_eq!(incoming.len(), 1);
+        assert_eq!(outgoing[0], incoming[0]);
+    }
+
+    #[test]
+    fn path_finding_is_bounded_cycle_safe_and_stable() {
+        let provider = FoundationDbProvider::for_tests();
+        let customer = entity("Customer", "customer-001");
+        let contract = entity("Contract", "contract-001");
+        let asset = entity("Asset", "asset-001");
+        let evidence = entity("EvidenceDocument", "doc-001");
+
+        for item in [
+            relationship("has_contract", customer.clone(), contract.clone()),
+            relationship("governs", contract.clone(), asset.clone()),
+            relationship("supports", asset.clone(), evidence.clone()),
+            relationship("cycles_to", asset.clone(), customer.clone()),
+        ] {
+            provider
+                .upsert_relationship(item)
+                .expect("relationship upsert should succeed");
+        }
+
+        let paths = provider
+            .find_paths(PathQuery {
+                from: customer.clone(),
+                to: evidence.clone(),
+                relationship_types: vec![],
+                max_depth: 4,
+                limit: 10,
+            })
+            .expect("path finding should succeed");
+        let too_shallow = provider
+            .find_paths(PathQuery {
+                from: customer,
+                to: evidence,
+                relationship_types: vec![],
+                max_depth: 2,
+                limit: 10,
+            })
+            .expect("path finding should succeed");
+
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].steps.len(), 3);
+        assert!(too_shallow.is_empty());
+    }
+
+    #[test]
+    fn evidence_links_are_persisted_and_queryable() {
+        let provider = FoundationDbProvider::for_tests();
+        let document = entity("EvidenceDocument", "doc-001");
+        let link = EntityLink {
+            entity: document.clone(),
+            source_ref: "sharepoint://tenant/demo/document/doc-001".into(),
+            evidence_id: Some("evidence-001".into()),
+            confidence: 1.0,
+            match_kind: "external-id".into(),
+            provenance: "test".into(),
+            metadata_json: None,
+        };
+
+        provider
+            .upsert_evidence_link(link.clone())
+            .expect("link upsert should succeed");
+        let by_entity = provider
+            .evidence_links_for_entity(&document)
+            .expect("links should query by entity");
+        let by_request = provider
+            .link_entities(EntityLinkRequest {
+                source_ref: Some(link.source_ref.clone()),
+                evidence_id: None,
+                content_json: None,
+                candidate_types: vec!["EvidenceDocument".into()],
+                ontology_scope: None,
+            })
+            .expect("links should query by request");
+
+        assert_eq!(by_entity, vec![link.clone()]);
+        assert_eq!(by_request, vec![link]);
     }
 }

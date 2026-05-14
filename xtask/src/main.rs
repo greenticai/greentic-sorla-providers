@@ -8,6 +8,12 @@ use std::process::{Command, Stdio};
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
+use sorla_provider_core::{
+    EntityLinkProvider, EntityLinkRequest, EntityRecord, EntityRef, EntityStoreProvider,
+    EvidenceProvider, EvidenceQuery, EvidenceQueryFilter, ExternalMappingProvider,
+    OntologyGraphProvider, OntologyScope, PathQuery, RelationshipDirection, RelationshipInstance,
+    RelationshipQuery, RelationshipRef,
+};
 
 const PROVIDER_MAP_PATH: &str = "ci/provider-dependencies.json";
 
@@ -55,16 +61,267 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1).collect::<Vec<_>>();
-    let command = args
-        .first()
-        .cloned()
-        .ok_or_else(|| "usage: cargo xtask <provider-version|provider-matrix> ...".to_string())?;
+    let command = args.first().cloned().ok_or_else(|| {
+        "usage: cargo xtask <provider-version|provider-matrix|ontology-smoke> ...".to_string()
+    })?;
     args.remove(0);
 
     match command.as_str() {
         "provider-version" => provider_version(args),
         "provider-matrix" => provider_matrix(args),
+        "ontology-smoke" => ontology_smoke(),
         _ => Err(format!("unknown xtask command: {command}")),
+    }
+}
+
+fn ontology_smoke() -> Result<(), String> {
+    let graph_paths = smoke_foundationdb_graph()?;
+    let sharepoint_links = smoke_sharepoint_linking()?;
+    let evidence_items = smoke_rag_evidence()?;
+    let catalog_entries = smoke_pack_catalog_metadata()?;
+    let security_artifacts_checked = smoke_security_checks()?;
+
+    let summary = serde_json::json!({
+        "graph_paths": graph_paths,
+        "sharepoint_links": sharepoint_links,
+        "evidence_items": evidence_items,
+        "catalog_entries": catalog_entries,
+        "security_artifacts_checked": security_artifacts_checked,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&summary).map_err(|err| format!("json error: {err}"))?
+    );
+    Ok(())
+}
+
+fn smoke_foundationdb_graph() -> Result<usize, String> {
+    let provider = provider_foundationdb::FoundationDbProvider::for_tests();
+    let customer = smoke_entity("Customer", "customer-001");
+    let contract = smoke_entity("Contract", "contract-001");
+    let asset = smoke_entity("Asset", "asset-001");
+    let evidence = smoke_entity("EvidenceDocument", "doc-001");
+
+    for entity in [&customer, &contract, &asset, &evidence] {
+        provider
+            .upsert_entity(EntityRecord {
+                entity: entity.clone(),
+                label: Some(format!("{} {}", entity.entity_type, entity.entity_id)),
+                metadata_json: None,
+            })
+            .map_err(|err| format!("entity upsert failed: {err}"))?;
+    }
+
+    for relationship in [
+        smoke_relationship("has_contract", customer.clone(), contract.clone()),
+        smoke_relationship("governs", contract.clone(), asset),
+        smoke_relationship("has_evidence", contract.clone(), evidence.clone()),
+    ] {
+        provider
+            .upsert_relationship(relationship)
+            .map_err(|err| format!("relationship upsert failed: {err}"))?;
+    }
+
+    let direct = provider
+        .query_relationships(RelationshipQuery {
+            root_entities: vec![customer.clone()],
+            relationship_type: Some("has_contract".into()),
+            direction: RelationshipDirection::Outgoing,
+            max_depth: Some(1),
+            limit: 10,
+        })
+        .map_err(|err| format!("relationship query failed: {err}"))?;
+    if direct.len() != 1 {
+        return Err(format!(
+            "expected one direct relationship, got {}",
+            direct.len()
+        ));
+    }
+
+    let paths = provider
+        .find_paths(PathQuery {
+            from: customer,
+            to: evidence,
+            relationship_types: vec![],
+            max_depth: 3,
+            limit: 10,
+        })
+        .map_err(|err| format!("path query failed: {err}"))?;
+    if paths.len() != 1 || paths[0].steps.len() != 2 {
+        return Err("expected one two-step Customer to EvidenceDocument path".into());
+    }
+
+    Ok(paths.len())
+}
+
+fn smoke_sharepoint_linking() -> Result<usize, String> {
+    let provider = provider_sharepoint_mock::SharePointMockProvider::for_tests();
+    provider
+        .validate_mapping(
+            r#"{
+                "schema": "greentic.sorla.external-mapping.v1",
+                "provider_id": "greentic.sorla.provider.sharepoint-mock",
+                "mappings": [
+                    {
+                        "source_type": "document",
+                        "target_concept": "EvidenceDocument",
+                        "id_field": "document_id",
+                        "entity_fields": {
+                            "title": "title",
+                            "source_url": "source_url"
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .map_err(|err| format!("mapping validation failed: {err}"))?;
+
+    let links = provider
+        .link_entities(EntityLinkRequest {
+            source_ref: Some("sharepoint://tenant/ka-fd-demo/document/doc-001".into()),
+            evidence_id: None,
+            content_json: None,
+            candidate_types: vec!["EvidenceDocument".into()],
+            ontology_scope: None,
+        })
+        .map_err(|err| format!("entity linking failed: {err}"))?;
+    if links.len() != 1 || links[0].entity.entity_id != "doc-001" {
+        return Err("expected one deterministic SharePoint entity link".into());
+    }
+
+    Ok(links.len())
+}
+
+fn smoke_rag_evidence() -> Result<usize, String> {
+    let provider = provider_rag_mock::RagMockProvider::for_tests();
+    let items = provider
+        .query_evidence(EvidenceQuery {
+            query: "risk evidence for building-kafd-01".into(),
+            filter: EvidenceQueryFilter {
+                ontology_scope: Some(OntologyScope {
+                    root_entities: vec![smoke_entity("Building", "building-kafd-01")],
+                    include_related: vec![],
+                    max_depth: Some(1),
+                    include_evidence_links: true,
+                }),
+                source_types: vec![],
+                document_types: vec![],
+                metadata_json: None,
+                time_range: None,
+                sensitivity_max: Some("internal".into()),
+            },
+            limit: 4,
+        })
+        .map_err(|err| format!("evidence query failed: {err}"))?;
+    if items.is_empty()
+        || items
+            .iter()
+            .any(|item| item.linked_entities.is_empty() || item.permissions_context_json.is_none())
+    {
+        return Err(
+            "expected ontology-scoped evidence with linked entities and permissions context".into(),
+        );
+    }
+    Ok(items.len())
+}
+
+fn smoke_pack_catalog_metadata() -> Result<usize, String> {
+    let manifests = vec![
+        provider_foundationdb::pack_manifest(),
+        provider_sharepoint_mock::pack_manifest(),
+        provider_rag_mock::pack_manifest(),
+    ];
+    if manifests
+        .iter()
+        .any(|manifest| manifest.ontology_capabilities.is_none())
+    {
+        return Err("expected all smoke providers to advertise ontology metadata".into());
+    }
+
+    let catalog = sorla_provider_catalog::ProviderCatalog::from_manifests(&manifests);
+    if catalog.entries.iter().any(|entry| {
+        entry.ontology.as_ref().is_none_or(|ontology| {
+            ontology.supported_ontology_schema.is_empty()
+                || !ontology.supported_ontology_schema_range.contains("1.0.0")
+        })
+    }) {
+        return Err("expected catalog ontology compatibility metadata".into());
+    }
+
+    Ok(catalog.entries.len())
+}
+
+fn smoke_security_checks() -> Result<usize, String> {
+    let mut files = Vec::new();
+    collect_json_files(&workspace_path("examples/generated-packs"), &mut files)?;
+    collect_json_files(&workspace_path("examples/generated-catalog"), &mut files)?;
+
+    let forbidden = [
+        "password",
+        "secret",
+        "api_key",
+        "apikey",
+        "credential",
+        "private_key",
+    ];
+    for path in &files {
+        let content = fs::read_to_string(path)
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        let lowered = content.to_ascii_lowercase();
+        for pattern in forbidden {
+            if lowered.contains(pattern) {
+                return Err(format!(
+                    "generated artifact {} contains credential-like text: {pattern}",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    Ok(files.len())
+}
+
+fn collect_json_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    for entry in
+        fs::read_dir(root).map_err(|err| format!("failed to read {}: {err}", root.display()))?
+    {
+        let entry = entry.map_err(|err| format!("failed to read directory entry: {err}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_json_files(&path, files)?;
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(())
+}
+
+fn smoke_entity(entity_type: &str, entity_id: &str) -> EntityRef {
+    EntityRef {
+        entity_type: entity_type.into(),
+        entity_id: entity_id.into(),
+        namespace: Some("ontology-smoke".into()),
+        version: None,
+    }
+}
+
+fn smoke_relationship(
+    relationship_type: &str,
+    from: EntityRef,
+    to: EntityRef,
+) -> RelationshipInstance {
+    RelationshipInstance {
+        relationship: RelationshipRef {
+            relationship_type: relationship_type.into(),
+            from,
+            to,
+        },
+        metadata_json: None,
+        provenance: Some("ontology-smoke".into()),
     }
 }
 
@@ -675,5 +932,10 @@ serde = "1"
         .unwrap();
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ontology_smoke_command_runs_locally() {
+        ontology_smoke().unwrap();
     }
 }

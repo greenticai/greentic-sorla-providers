@@ -1,12 +1,15 @@
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
-use sorla_provider_catalog::ProviderCatalogEntry;
+use sorla_provider_catalog::{ProviderCatalogEntry, ProviderCatalogOntology};
 use sorla_provider_core::{
-    ConfigValidator, ContractCompatibility, ExternalReferencePayload, ExternalReferenceProvider,
-    ExternalReferenceRequest, HealthReport, HealthState, PackEmission, ProviderCapability,
-    ProviderHealth, ProviderMetadata, ProviderMetadataSource, ProviderStatus,
-    SORLA_PROVIDER_CONTRACT_VERSION,
+    ConfigValidator, ContractCompatibility, EntityLink, EntityLinkProvider, EntityLinkRequest,
+    EntityRef, ExternalMappingProvider, ExternalReferencePayload, ExternalReferenceProvider,
+    ExternalReferenceRequest, HealthReport, HealthState, OntologyContractCompatibility,
+    PackEmission, ProviderCapability, ProviderHealth, ProviderMetadata, ProviderMetadataSource,
+    ProviderOntologyCapabilities, ProviderStatus, SORLA_PROVIDER_CONTRACT_VERSION,
 };
 use sorla_provider_pack::{
     ArtifactReference, ConfigSchemaRef, ProviderPackManifest, provider_artifact_file_uri,
@@ -20,6 +23,27 @@ const PROVIDER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct SharePointMockConfig {
     pub seed: String,
     pub tenant_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct ExternalReferenceMetadata {
+    building_id: Option<String>,
+    floor_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ExternalMappingDocument {
+    schema: String,
+    provider_id: String,
+    mappings: Vec<ExternalMappingRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ExternalMappingRule {
+    source_type: String,
+    target_concept: String,
+    id_field: String,
+    entity_fields: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,8 +121,8 @@ impl SharePointMockProvider {
             .chain(self.config.tenant_id.bytes())
             .chain(request.reference_type.bytes())
             .chain(request.reference_id.bytes())
-            .chain(request.building_id.as_deref().unwrap_or_default().bytes())
-            .chain(request.floor_id.as_deref().unwrap_or_default().bytes())
+            .chain(request.source_ref.as_deref().unwrap_or_default().bytes())
+            .chain(request.metadata_json.as_deref().unwrap_or_default().bytes())
         {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(1099511628211);
@@ -106,15 +130,33 @@ impl SharePointMockProvider {
         hash
     }
 
-    fn building_id(&self, request: &ExternalReferenceRequest) -> String {
+    fn request_metadata(
+        request: &ExternalReferenceRequest,
+    ) -> Result<ExternalReferenceMetadata, sorla_provider_core::ProviderError> {
         request
-            .building_id
-            .clone()
+            .metadata_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|err| {
+                sorla_provider_core::ProviderError::Validation(format!(
+                    "invalid external reference metadata JSON: {err}"
+                ))
+            })
+            .map(|metadata| metadata.unwrap_or_default())
+    }
+
+    fn building_id(&self, request: &ExternalReferenceRequest) -> String {
+        Self::request_metadata(request)
+            .ok()
+            .and_then(|metadata| metadata.building_id)
             .unwrap_or_else(|| format!("building-{}", self.stable_hash(request) % 1000))
     }
 
     fn floor_id(&self, request: &ExternalReferenceRequest) -> Option<String> {
-        request.floor_id.clone()
+        Self::request_metadata(request)
+            .ok()
+            .and_then(|metadata| metadata.floor_id)
     }
 
     fn stable_date(&self, request: &ExternalReferenceRequest) -> String {
@@ -130,6 +172,112 @@ impl SharePointMockProvider {
             tenant = self.config.tenant_id,
             building = building_id
         )
+    }
+
+    fn source_ref_for(&self, family: &str, record_id: &str) -> String {
+        match family {
+            "btg" => format!(
+                "sharepoint://tenant/{tenant}/document/{record_id}",
+                tenant = self.config.tenant_id
+            ),
+            "rfi" | "site-visit" => format!(
+                "sharepoint://tenant/{tenant}/list/{family}/item/{record_id}",
+                tenant = self.config.tenant_id
+            ),
+            _ => format!(
+                "sharepoint://tenant/{tenant}/document/{record_id}",
+                tenant = self.config.tenant_id
+            ),
+        }
+    }
+
+    fn link_from_parts(
+        &self,
+        entity_id: String,
+        source_ref: String,
+        metadata_json: Option<String>,
+    ) -> EntityLink {
+        EntityLink {
+            entity: EntityRef {
+                entity_type: "EvidenceDocument".into(),
+                entity_id,
+                namespace: Some(self.config.tenant_id.clone()),
+                version: None,
+            },
+            source_ref,
+            evidence_id: None,
+            confidence: 1.0,
+            match_kind: "external-id".into(),
+            provenance: "sharepoint-mock deterministic mapping".into(),
+            metadata_json,
+        }
+    }
+
+    fn link_from_source_ref(
+        &self,
+        source_ref: &str,
+    ) -> Result<EntityLink, sorla_provider_core::ProviderError> {
+        let expected_prefix = format!("sharepoint://tenant/{}/", self.config.tenant_id);
+        if !source_ref.starts_with(&expected_prefix) {
+            return Err(sorla_provider_core::ProviderError::Validation(format!(
+                "source_ref must start with {expected_prefix}"
+            )));
+        }
+
+        let parts = source_ref[expected_prefix.len()..]
+            .split('/')
+            .collect::<Vec<_>>();
+        let entity_id = match parts.as_slice() {
+            ["document", document_id] => *document_id,
+            ["list", _list_id, "item", item_id] => *item_id,
+            _ => {
+                return Err(sorla_provider_core::ProviderError::Validation(
+                    "unsupported SharePoint mock source_ref shape".into(),
+                ));
+            }
+        };
+
+        Ok(self.link_from_parts(entity_id.into(), source_ref.into(), None))
+    }
+
+    fn record_identity(&self, record: &SharePointMockRecord) -> (String, String, String) {
+        match record {
+            SharePointMockRecord::Btg(item) => (
+                item.document_id.clone(),
+                self.source_ref_for("btg", &item.document_id),
+                serde_json::json!({
+                    "family": "btg",
+                    "building_id": item.building_id,
+                    "floor_id": item.floor_id,
+                    "title": item.title,
+                    "source_url": item.source_url,
+                })
+                .to_string(),
+            ),
+            SharePointMockRecord::Rfi(item) => (
+                item.rfi_id.clone(),
+                self.source_ref_for("rfi", &item.rfi_id),
+                serde_json::json!({
+                    "family": "rfi",
+                    "building_id": item.building_id,
+                    "floor_id": item.floor_id,
+                    "status": item.status,
+                    "source_url": item.source_url,
+                })
+                .to_string(),
+            ),
+            SharePointMockRecord::SiteVisit(item) => (
+                item.visit_id.clone(),
+                self.source_ref_for("site-visit", &item.visit_id),
+                serde_json::json!({
+                    "family": "site-visit",
+                    "building_id": item.building_id,
+                    "floor_id": item.floor_id,
+                    "source_url": item.source_url,
+                })
+                .to_string(),
+            ),
+        }
     }
 
     fn btg_record(&self, request: &ExternalReferenceRequest) -> SharePointMockRecord {
@@ -229,6 +377,7 @@ impl SharePointMockProvider {
         &self,
         request: &ExternalReferenceRequest,
     ) -> Result<SharePointMockRecord, sorla_provider_core::ProviderError> {
+        Self::request_metadata(request)?;
         match request.reference_type.as_str() {
             "btg" => Ok(self.btg_record(request)),
             "rfi" => Ok(self.rfi_record(request)),
@@ -251,6 +400,8 @@ impl ProviderMetadataSource for SharePointMockProvider {
             is_mock: true,
             capabilities: vec![
                 ProviderCapability::ExternalReferenceResolve,
+                ProviderCapability::ExternalMappingValidate,
+                ProviderCapability::EntityLink,
                 ProviderCapability::HealthCheck,
                 ProviderCapability::ConfigValidate,
                 ProviderCapability::PackMetadataEmit,
@@ -260,6 +411,27 @@ impl ProviderMetadataSource for SharePointMockProvider {
                 "0.1",
                 ">=0.1, <0.2",
             ),
+            ontology_capabilities: Some(ProviderOntologyCapabilities {
+                schema: "greentic.sorla.provider.ontology-capabilities.v1".into(),
+                compatibility: OntologyContractCompatibility {
+                    supported_ontology_schema: "greentic.sorla.ontology.v1".into(),
+                    supported_ontology_schema_range: ">=1.0.0, <2.0.0".into(),
+                    supported_retrieval_binding_schema: None,
+                    supported_external_mapping_schema: Some(
+                        "greentic.sorla.external-mapping.v1".into(),
+                    ),
+                },
+                supports_entity_read: false,
+                supports_entity_search: false,
+                supports_relationship_query: false,
+                supports_path_find: false,
+                supports_entity_linking: true,
+                supports_ontology_scoped_evidence: false,
+                supported_concept_types: vec!["EvidenceDocument".into()],
+                supported_relationship_types: vec![],
+                max_traversal_depth: None,
+                supports_policy_context: false,
+            }),
         }
     }
 
@@ -330,6 +502,95 @@ impl ExternalReferenceProvider for SharePointMockProvider {
     }
 }
 
+impl ExternalMappingProvider for SharePointMockProvider {
+    fn validate_mapping(
+        &self,
+        mapping_json: &str,
+    ) -> Result<(), sorla_provider_core::ProviderError> {
+        let mapping: ExternalMappingDocument =
+            serde_json::from_str(mapping_json).map_err(|err| {
+                sorla_provider_core::ProviderError::Validation(format!(
+                    "invalid external mapping JSON: {err}"
+                ))
+            })?;
+
+        if mapping.schema != "greentic.sorla.external-mapping.v1" {
+            return Err(sorla_provider_core::ProviderError::Validation(
+                "unsupported external mapping schema".into(),
+            ));
+        }
+        if mapping.provider_id != PROVIDER_ID {
+            return Err(sorla_provider_core::ProviderError::Validation(
+                "external mapping provider_id does not match sharepoint mock".into(),
+            ));
+        }
+        if mapping.mappings.is_empty() {
+            return Err(sorla_provider_core::ProviderError::Validation(
+                "external mapping must include at least one mapping".into(),
+            ));
+        }
+
+        for rule in mapping.mappings {
+            if rule.source_type.trim().is_empty()
+                || rule.target_concept.trim().is_empty()
+                || rule.id_field.trim().is_empty()
+                || rule.entity_fields.is_empty()
+            {
+                return Err(sorla_provider_core::ProviderError::Validation(
+                    "external mapping rules must include source_type, target_concept, id_field, and entity_fields".into(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl EntityLinkProvider for SharePointMockProvider {
+    fn link_entities(
+        &self,
+        request: EntityLinkRequest,
+    ) -> Result<Vec<EntityLink>, sorla_provider_core::ProviderError> {
+        let mut links = Vec::new();
+
+        if let Some(source_ref) = request.source_ref.as_deref() {
+            links.push(self.link_from_source_ref(source_ref)?);
+        }
+
+        if let Some(content_json) = request.content_json.as_deref() {
+            let record: SharePointMockRecord =
+                serde_json::from_str(content_json).map_err(|err| {
+                    sorla_provider_core::ProviderError::Validation(format!(
+                        "invalid SharePoint mock content JSON: {err}"
+                    ))
+                })?;
+            let (entity_id, source_ref, metadata_json) = self.record_identity(&record);
+            links.push(self.link_from_parts(entity_id, source_ref, Some(metadata_json)));
+        }
+
+        links.sort_by(|left, right| {
+            left.entity
+                .entity_id
+                .cmp(&right.entity.entity_id)
+                .then_with(|| left.source_ref.cmp(&right.source_ref))
+        });
+        links.dedup_by(|left, right| {
+            left.entity == right.entity && left.source_ref == right.source_ref
+        });
+
+        if !request.candidate_types.is_empty() {
+            links.retain(|link| {
+                request
+                    .candidate_types
+                    .iter()
+                    .any(|candidate_type| candidate_type == &link.entity.entity_type)
+            });
+        }
+
+        Ok(links)
+    }
+}
+
 pub fn pack_manifest() -> ProviderPackManifest {
     let provider = SharePointMockProvider::for_tests();
     ProviderPackManifest::from_metadata(
@@ -371,6 +632,29 @@ pub fn catalog_entry() -> ProviderCatalogEntry {
             .first()
             .map(|item| item.uri.clone()),
         oci_reference: manifest.oci_reference,
+        ontology: manifest.ontology_capabilities.as_ref().map(|capabilities| {
+            ProviderCatalogOntology {
+                capabilities: vec![ProviderCapability::EntityLink],
+                max_traversal_depth: None,
+                supports_generic_entity_refs: true,
+                supported_ontology_schema: capabilities
+                    .compatibility
+                    .supported_ontology_schema
+                    .clone(),
+                supported_ontology_schema_range: capabilities
+                    .compatibility
+                    .supported_ontology_schema_range
+                    .clone(),
+                supported_retrieval_binding_schema: capabilities
+                    .compatibility
+                    .supported_retrieval_binding_schema
+                    .clone(),
+                supported_external_mapping_schema: capabilities
+                    .compatibility
+                    .supported_external_mapping_schema
+                    .clone(),
+            }
+        }),
     }
 }
 
@@ -378,16 +662,20 @@ pub fn catalog_entry() -> ProviderCatalogEntry {
 mod tests {
     use super::{SharePointMockProvider, SharePointMockRecord, catalog_entry, pack_manifest};
     use sorla_provider_core::{
-        ConfigValidator, ExternalReferenceProvider, ExternalReferenceRequest, ProviderCapability,
-        ProviderHealth, ProviderMetadataSource,
+        ConfigValidator, EntityLinkProvider, EntityLinkRequest, ExternalMappingProvider,
+        ExternalReferenceProvider, ExternalReferenceRequest, ProviderCapability, ProviderHealth,
+        ProviderMetadataSource,
     };
 
     fn request(reference_type: &str) -> ExternalReferenceRequest {
         ExternalReferenceRequest {
             reference_type: reference_type.into(),
             reference_id: "asset-42".into(),
-            building_id: Some("building-kafd-01".into()),
-            floor_id: Some("floor-07".into()),
+            source_ref: Some("sharepoint://tenant/ka-fd-demo/document/asset-42".into()),
+            metadata_json: Some(
+                r#"{"building_id":"building-kafd-01","floor_id":"floor-07"}"#.into(),
+            ),
+            ontology_scope: None,
         }
     }
 
@@ -396,6 +684,8 @@ mod tests {
         let provider = SharePointMockProvider::for_tests();
         let metadata = provider.metadata();
         assert!(metadata.supports(ProviderCapability::ExternalReferenceResolve));
+        assert!(metadata.supports(ProviderCapability::ExternalMappingValidate));
+        assert!(metadata.supports(ProviderCapability::EntityLink));
         assert!(metadata.is_mock);
     }
 
@@ -424,6 +714,8 @@ mod tests {
             "file://generated/provider-sharepoint-mock.gtpack"
         );
         assert_eq!(manifest.runtime_components.len(), 1);
+        assert!(manifest.ontology_capabilities.is_some());
+        assert!(entry.ontology.is_some());
     }
 
     #[test]
@@ -490,5 +782,82 @@ mod tests {
         let provider = SharePointMockProvider::for_tests();
         let result = provider.resolve_external_reference(request("drawing-set"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn sharepoint_mock_validates_generic_external_mapping() {
+        let provider = SharePointMockProvider::for_tests();
+        let valid = r#"{
+            "schema": "greentic.sorla.external-mapping.v1",
+            "provider_id": "greentic.sorla.provider.sharepoint-mock",
+            "mappings": [
+                {
+                    "source_type": "document",
+                    "target_concept": "EvidenceDocument",
+                    "id_field": "document_id",
+                    "entity_fields": {
+                        "title": "title",
+                        "source_url": "source_url"
+                    }
+                }
+            ]
+        }"#;
+        let invalid = r#"{
+            "schema": "greentic.sorla.external-mapping.v1",
+            "provider_id": "other",
+            "mappings": []
+        }"#;
+
+        assert!(provider.validate_mapping(valid).is_ok());
+        assert!(provider.validate_mapping(invalid).is_err());
+    }
+
+    #[test]
+    fn sharepoint_mock_links_generic_entities_from_source_ref() {
+        let provider = SharePointMockProvider::for_tests();
+        let links = provider
+            .link_entities(EntityLinkRequest {
+                source_ref: Some("sharepoint://tenant/ka-fd-demo/document/doc-123".into()),
+                evidence_id: None,
+                content_json: None,
+                candidate_types: vec!["EvidenceDocument".into()],
+                ontology_scope: None,
+            })
+            .expect("linking should succeed");
+
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].entity.entity_type, "EvidenceDocument");
+        assert_eq!(links[0].entity.entity_id, "doc-123");
+        assert_eq!(links[0].match_kind, "external-id");
+        assert_eq!(
+            links[0].source_ref,
+            "sharepoint://tenant/ka-fd-demo/document/doc-123"
+        );
+    }
+
+    #[test]
+    fn sharepoint_mock_links_generic_entities_from_content_metadata() {
+        let provider = SharePointMockProvider::for_tests();
+        let payload = provider
+            .resolve_external_reference(request("btg"))
+            .expect("resolution should succeed");
+        let links = provider
+            .link_entities(EntityLinkRequest {
+                source_ref: None,
+                evidence_id: None,
+                content_json: Some(payload.content_json),
+                candidate_types: vec![],
+                ontology_scope: None,
+            })
+            .expect("linking should succeed");
+
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].entity.entity_type, "EvidenceDocument");
+        assert!(
+            links[0]
+                .metadata_json
+                .as_deref()
+                .is_some_and(|metadata| metadata.contains("building_id"))
+        );
     }
 }

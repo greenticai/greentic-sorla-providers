@@ -22,6 +22,7 @@ fn bench_metadata_support_lookup(c: &mut Criterion) {
             "0.1",
             ">=0.1, <0.2",
         ),
+        ontology_capabilities: None,
     };
 
     c.bench_function("provider_metadata_supports_lookup", |b| {

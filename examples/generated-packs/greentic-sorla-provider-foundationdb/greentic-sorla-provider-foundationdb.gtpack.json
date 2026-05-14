@@ -12,6 +12,12 @@
       "projection-put",
       "projection-rebuild",
       "projection-checkpoint",
+      "entity-read",
+      "entity-search",
+      "relationship-read",
+      "relationship-query",
+      "path-find",
+      "entity-link",
       "health-check",
       "config-validate",
       "pack-metadata-emit"
@@ -44,6 +50,29 @@
     "display": {
       "title": "FoundationDB",
       "summary": "FoundationDB provider manifest for SoRLa"
+    },
+    "ontology_capabilities": {
+      "schema": "greentic.sorla.provider.ontology-capabilities.v1",
+      "compatibility": {
+        "supported_ontology_schema": "greentic.sorla.ontology.graph.v1",
+        "supported_ontology_schema_range": ">=1.0.0, <2.0.0",
+        "supported_retrieval_binding_schema": null,
+        "supported_external_mapping_schema": null
+      },
+      "supports_entity_read": true,
+      "supports_entity_search": true,
+      "supports_relationship_query": true,
+      "supports_path_find": true,
+      "supports_entity_linking": true,
+      "supports_ontology_scoped_evidence": false,
+      "supported_concept_types": [
+        "*"
+      ],
+      "supported_relationship_types": [
+        "*"
+      ],
+      "max_traversal_depth": 8,
+      "supports_policy_context": false
     }
   }
 }

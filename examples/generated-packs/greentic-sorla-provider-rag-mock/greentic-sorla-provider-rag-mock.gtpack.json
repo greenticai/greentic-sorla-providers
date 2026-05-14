@@ -8,6 +8,7 @@
     "capabilities": [
       "evidence-query",
       "evidence-resolve",
+      "ontology-scoped-evidence-query",
       "health-check",
       "config-validate",
       "pack-metadata-emit"
@@ -40,6 +41,29 @@
     "display": {
       "title": "RAG Mock",
       "summary": "RAG Mock provider manifest for SoRLa"
+    },
+    "ontology_capabilities": {
+      "schema": "greentic.sorla.provider.ontology-capabilities.v1",
+      "compatibility": {
+        "supported_ontology_schema": "greentic.sorla.ontology.v1",
+        "supported_ontology_schema_range": ">=1.0.0, <2.0.0",
+        "supported_retrieval_binding_schema": "greentic.sorla.retrieval-bindings.v1",
+        "supported_external_mapping_schema": null
+      },
+      "supports_entity_read": false,
+      "supports_entity_search": false,
+      "supports_relationship_query": false,
+      "supports_path_find": false,
+      "supports_entity_linking": false,
+      "supports_ontology_scoped_evidence": true,
+      "supported_concept_types": [
+        "Building",
+        "Floor",
+        "EvidenceDocument"
+      ],
+      "supported_relationship_types": [],
+      "max_traversal_depth": 1,
+      "supports_policy_context": false
     }
   }
 }
