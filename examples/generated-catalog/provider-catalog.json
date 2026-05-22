@@ -9,6 +9,8 @@
       "capabilities": [
         "event-append",
         "event-stream-read",
+        "canonical-state",
+        "canonical-write",
         "projection-get",
         "projection-put",
         "projection-rebuild",
@@ -35,6 +37,13 @@
       "config_schema_path": "schemas/provider-config.schema.json",
       "artifact_uri": "./greentic-sorla-provider-foundationdb.gtpack.json",
       "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.4",
+      "sdk_binding": {
+        "crate_name": "provider_foundationdb",
+        "package_name": "provider-foundationdb",
+        "contract_crate": "sorla-provider-core",
+        "contract_version": "0.1.0",
+        "factory_symbol": "FoundationDbProvider::new"
+      },
       "ontology": {
         "capabilities": [
           "entity-read",
@@ -48,7 +57,15 @@
         "supported_ontology_schema": "greentic.sorla.ontology.graph.v1",
         "supported_ontology_schema_range": ">=1.0.0, <2.0.0",
         "supported_retrieval_binding_schema": null,
-        "supported_external_mapping_schema": null
+        "supported_external_mapping_schema": null,
+        "index_capabilities": {
+          "exact": false,
+          "composite": false
+        },
+        "search_capabilities": {
+          "text_projection": "unavailable",
+          "vector_projection": "unavailable"
+        }
       }
     },
     {
@@ -75,6 +92,13 @@
       "config_schema_path": "schemas/provider-config.schema.json",
       "artifact_uri": "./greentic-sorla-provider-rag-mock.gtpack.json",
       "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/rag-mock:0.1.4",
+      "sdk_binding": {
+        "crate_name": "provider_rag_mock",
+        "package_name": "provider-rag-mock",
+        "contract_crate": "sorla-provider-core",
+        "contract_version": "0.1.0",
+        "factory_symbol": "RagMockProvider::new"
+      },
       "ontology": {
         "capabilities": [
           "ontology-scoped-evidence-query"
@@ -111,6 +135,13 @@
       "config_schema_path": "schemas/provider-config.schema.json",
       "artifact_uri": "./greentic-sorla-provider-sharepoint-mock.gtpack.json",
       "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/sharepoint-mock:0.1.4",
+      "sdk_binding": {
+        "crate_name": "provider_sharepoint_mock",
+        "package_name": "provider-sharepoint-mock",
+        "contract_crate": "sorla-provider-core",
+        "contract_version": "0.1.0",
+        "factory_symbol": "SharePointMockProvider::new"
+      },
       "ontology": {
         "capabilities": [
           "entity-link"

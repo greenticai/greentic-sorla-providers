@@ -32,6 +32,13 @@
         "artifact_uri": "oci://ghcr.io/greenticai/sorla-providers/rag-mock:0.1.4"
       }
     ],
+    "sdk_binding": {
+      "crate_name": "provider_rag_mock",
+      "package_name": "provider-rag-mock",
+      "contract_crate": "sorla-provider-core",
+      "contract_version": "0.1.0",
+      "factory_symbol": "RagMockProvider::new"
+    },
     "config_schema": {
       "format": "json-schema",
       "path": "schemas/provider-config.schema.json",

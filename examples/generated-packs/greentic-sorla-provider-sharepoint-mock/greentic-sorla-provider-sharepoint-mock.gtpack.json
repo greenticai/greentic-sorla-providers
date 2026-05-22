@@ -32,6 +32,13 @@
         "artifact_uri": "oci://ghcr.io/greenticai/sorla-providers/sharepoint-mock:0.1.4"
       }
     ],
+    "sdk_binding": {
+      "crate_name": "provider_sharepoint_mock",
+      "package_name": "provider-sharepoint-mock",
+      "contract_crate": "sorla-provider-core",
+      "contract_version": "0.1.0",
+      "factory_symbol": "SharePointMockProvider::new"
+    },
     "config_schema": {
       "format": "json-schema",
       "path": "schemas/provider-config.schema.json",

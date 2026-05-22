@@ -4,20 +4,23 @@ mod traits;
 mod types;
 
 pub use traits::{
-    ConfigValidator, EntityLinkProvider, EntityStoreProvider, EventStoreProvider, EvidenceProvider,
-    ExternalMappingProvider, ExternalReferenceProvider, OntologyGraphProvider, ProjectionProvider,
-    ProviderHealth, ProviderMetadataSource,
+    CanonicalEntityStoreProvider, CanonicalWriteProvider, ConfigValidator, EntityLinkProvider,
+    EntityStoreProvider, EventStoreProvider, EvidenceProvider, ExternalMappingProvider,
+    ExternalReferenceProvider, OntologyGraphProvider, ProjectionProvider, ProviderHealth,
+    ProviderMetadataSource,
 };
 pub use types::{
-    AppendEventRequest, ContractCompatibility, EntityLink, EntityLinkRequest, EntityRecord,
-    EntityRef, EntitySearchQuery, EventRecord, EventStreamRequest, EvidenceItem, EvidenceQuery,
+    AppendEventRequest, CanonicalEntityRecord, CanonicalWriteRequest, CanonicalWriteResult,
+    ContractCompatibility, EntityLink, EntityLinkRequest, EntityRecord, EntityRef,
+    EntitySearchQuery, EventRecord, EventStreamRequest, EvidenceItem, EvidenceQuery,
     EvidenceQueryFilter, ExternalReferencePayload, ExternalReferenceRequest, HealthReport,
     HealthState, OntologyContractCompatibility, OntologyPath, OntologyPathStep, OntologyScope,
     PackEmission, PathQuery, PersistProjectionRequest, PolicyContext, PolicyContextRequest,
-    ProjectionCheckpoint, ProjectionRebuildRequest, ProjectionRecord, ProviderCapability,
-    ProviderError, ProviderMetadata, ProviderOntologyCapabilities, ProviderStatus,
+    ProjectionCheckpoint, ProjectionRebuildRequest, ProjectionRecord, ProjectionSupport,
+    ProviderCapability, ProviderError, ProviderIndexCapabilities, ProviderMetadata,
+    ProviderOntologyCapabilities, ProviderSearchCapabilities, ProviderStatus,
     RelationshipDirection, RelationshipInstance, RelationshipQuery, RelationshipRef,
-    RelationshipTraversalRule, TimeRange,
+    RelationshipTraversalRule, SorEventRecord, SorNamespace, TimeRange,
 };
 
 /// Canonical contract version for SoRLa provider implementations.
@@ -26,10 +29,11 @@ pub const SORLA_PROVIDER_CONTRACT_VERSION: &str = "0.1.0";
 #[cfg(test)]
 mod tests {
     use super::{
-        ContractCompatibility, EntityLink, EntityLinkRequest, EntityRef, EvidenceQueryFilter,
-        ExternalReferenceRequest, OntologyContractCompatibility, OntologyScope, PathQuery,
-        ProviderCapability, ProviderMetadata, ProviderStatus, RelationshipDirection,
-        RelationshipTraversalRule, SORLA_PROVIDER_CONTRACT_VERSION,
+        CanonicalEntityRecord, ContractCompatibility, EntityLink, EntityLinkRequest, EntityRef,
+        EvidenceQueryFilter, ExternalReferenceRequest, OntologyContractCompatibility,
+        OntologyScope, PathQuery, ProjectionSupport, ProviderCapability, ProviderIndexCapabilities,
+        ProviderMetadata, ProviderSearchCapabilities, ProviderStatus, RelationshipDirection,
+        RelationshipTraversalRule, SORLA_PROVIDER_CONTRACT_VERSION, SorEventRecord, SorNamespace,
     };
 
     fn sample_metadata() -> ProviderMetadata {
@@ -84,6 +88,107 @@ mod tests {
         let parsed: EntityRef = serde_json::from_str(&json).expect("entity should deserialize");
 
         assert_eq!(parsed, entity);
+    }
+
+    #[test]
+    fn sor_namespace_maps_to_existing_entity_namespace() {
+        let namespace = SorNamespace {
+            tenant_id: "tenant-a".into(),
+            sor_id: "contracts".into(),
+            environment_id: None,
+        };
+        let dev_namespace = SorNamespace {
+            tenant_id: "tenant-a".into(),
+            sor_id: "contracts".into(),
+            environment_id: Some("dev".into()),
+        };
+
+        assert_eq!(namespace.production_key(), "tenant-a\u{1f}contracts");
+        assert_eq!(namespace.to_entity_namespace(), "tenant-a/contracts");
+        assert_eq!(dev_namespace.production_key(), namespace.production_key());
+        assert_eq!(
+            dev_namespace.to_entity_namespace(),
+            "tenant-a/contracts/dev"
+        );
+    }
+
+    #[test]
+    fn canonical_entity_record_has_stable_json_shape() {
+        let record = CanonicalEntityRecord {
+            namespace: SorNamespace {
+                tenant_id: "tenant-a".into(),
+                sor_id: "contracts".into(),
+                environment_id: None,
+            },
+            entity_type: "Contract".into(),
+            entity_id: "contract-001".into(),
+            canonical_version: "2026-05-22".into(),
+            revision: 7,
+            data_json: serde_json::json!({
+                "status": "active",
+                "amount": 1250
+            }),
+            created_at: "2026-05-22T10:00:00Z".into(),
+            updated_at: "2026-05-22T11:00:00Z".into(),
+        };
+
+        let json = serde_json::to_string(&record).expect("record should serialize");
+        let parsed: CanonicalEntityRecord =
+            serde_json::from_str(&json).expect("record should deserialize");
+
+        assert_eq!(
+            json,
+            r#"{"namespace":{"tenant_id":"tenant-a","sor_id":"contracts"},"entity_type":"Contract","entity_id":"contract-001","canonical_version":"2026-05-22","revision":7,"data_json":{"amount":1250,"status":"active"},"created_at":"2026-05-22T10:00:00Z","updated_at":"2026-05-22T11:00:00Z"}"#
+        );
+        assert_eq!(parsed, record);
+        assert_eq!(
+            record.entity_ref(),
+            EntityRef {
+                entity_type: "Contract".into(),
+                entity_id: "contract-001".into(),
+                namespace: Some("tenant-a/contracts".into()),
+                version: Some("2026-05-22".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn sor_event_record_has_stable_json_shape() {
+        let record = SorEventRecord {
+            namespace: SorNamespace {
+                tenant_id: "tenant-a".into(),
+                sor_id: "contracts".into(),
+                environment_id: Some("dev".into()),
+            },
+            event_id: "evt-001".into(),
+            stream_id: "Contract/contract-001".into(),
+            sequence: 3,
+            event_type: "contract.updated".into(),
+            entity_ref: EntityRef {
+                entity_type: "Contract".into(),
+                entity_id: "contract-001".into(),
+                namespace: Some("tenant-a/contracts/dev".into()),
+                version: Some("2026-05-22".into()),
+            },
+            command_id: Some("cmd-001".into()),
+            idempotency_key: Some("idem-001".into()),
+            actor: Some("user:123".into()),
+            source_view_version: None,
+            canonical_version: "2026-05-22".into(),
+            payload_json: serde_json::json!({"field": "status", "value": "active"}),
+            timestamp: "2026-05-22T11:00:00Z".into(),
+        };
+
+        let json = serde_json::to_string(&record).expect("record should serialize");
+        let parsed: SorEventRecord =
+            serde_json::from_str(&json).expect("record should deserialize");
+
+        assert_eq!(
+            json,
+            r#"{"namespace":{"tenant_id":"tenant-a","sor_id":"contracts","environment_id":"dev"},"event_id":"evt-001","stream_id":"Contract/contract-001","sequence":3,"event_type":"contract.updated","entity_ref":{"entity_type":"Contract","entity_id":"contract-001","namespace":"tenant-a/contracts/dev","version":"2026-05-22"},"command_id":"cmd-001","idempotency_key":"idem-001","actor":"user:123","canonical_version":"2026-05-22","payload_json":{"field":"status","value":"active"},"timestamp":"2026-05-22T11:00:00Z"}"#
+        );
+        assert_eq!(parsed, record);
+        assert!(!json.contains("source_view_version"));
     }
 
     #[test]
@@ -156,6 +261,20 @@ mod tests {
             .expect("capability should serialize");
 
         assert_eq!(serialized, "\"ontology-scoped-evidence-query\"");
+    }
+
+    #[test]
+    fn new_capabilities_have_kebab_case_names() {
+        assert_eq!(
+            serde_json::to_string(&ProviderCapability::CanonicalState)
+                .expect("capability should serialize"),
+            "\"canonical-state\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ProviderCapability::TextSearchProjection)
+                .expect("capability should serialize"),
+            "\"text-search-projection\""
+        );
     }
 
     #[test]
@@ -232,5 +351,55 @@ mod tests {
 
         assert!(valid.parses_schema_range());
         assert!(!invalid.parses_schema_range());
+    }
+
+    #[test]
+    fn ontology_capabilities_deserialize_legacy_v1_without_new_metadata() {
+        let json = r#"{
+            "schema":"greentic.sorla.provider.ontology-capabilities.v1",
+            "compatibility":{
+                "supported_ontology_schema":"greentic.sorla.ontology.v1",
+                "supported_ontology_schema_range":">=1.0.0, <2.0.0",
+                "supported_retrieval_binding_schema":null,
+                "supported_external_mapping_schema":null
+            },
+            "supports_entity_read":true,
+            "supports_entity_search":true,
+            "supports_relationship_query":false,
+            "supports_path_find":false,
+            "supports_entity_linking":false,
+            "supports_ontology_scoped_evidence":false,
+            "supported_concept_types":["*"],
+            "supported_relationship_types":[],
+            "max_traversal_depth":null,
+            "supports_policy_context":false
+        }"#;
+
+        let capabilities: super::ProviderOntologyCapabilities =
+            serde_json::from_str(json).expect("legacy capabilities should deserialize");
+
+        assert!(capabilities.index_capabilities.is_none());
+        assert!(capabilities.search_capabilities.is_none());
+    }
+
+    #[test]
+    fn structured_index_and_search_capabilities_round_trip() {
+        let index = ProviderIndexCapabilities {
+            exact: true,
+            composite: false,
+        };
+        let search = ProviderSearchCapabilities {
+            text_projection: ProjectionSupport::Optional,
+            vector_projection: ProjectionSupport::Unavailable,
+        };
+
+        let json = serde_json::to_string(&(index.clone(), search.clone()))
+            .expect("capabilities should serialize");
+        let parsed: (ProviderIndexCapabilities, ProviderSearchCapabilities) =
+            serde_json::from_str(&json).expect("capabilities should deserialize");
+
+        assert_eq!(parsed, (index, search));
+        assert!(json.contains("text_projection"));
+        assert!(json.contains("optional"));
     }
 }

@@ -33,7 +33,10 @@ Each catalog entry includes:
 - config schema path
 - primary artifact URI
 - optional OCI reference
+- optional Rust provider SDK binding metadata
 - optional ontology discovery metadata
+
+Capability discovery starts with the top-level `capabilities` list. Newer providers may advertise canonical and projection-oriented flags such as `canonical-state`, `canonical-write`, `exact-index`, `composite-index`, `text-search-projection`, and `vector-search-projection`.
 
 ## Ontology Discovery Metadata
 
@@ -46,8 +49,14 @@ The section contains:
 - whether generic entity refs are supported
 - ontology schema compatibility ranges
 - optional retrieval binding or external mapping schema support
+- optional structured index capability metadata
+- optional structured search projection capability metadata
 
 Catalog generation remains manifest-driven, so discovery tools can inspect ontology support without loading provider code.
+
+## SDK Binding Metadata
+
+When a provider pack includes `sdk_binding`, the generated catalog carries it through unchanged. This gives SORX or other runtime adapters a stable package/crate/contract tuple for selecting a provider crate instead of relying on provider IDs or OCI strings alone.
 
 ## Tagging
 

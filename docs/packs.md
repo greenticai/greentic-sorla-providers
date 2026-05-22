@@ -46,6 +46,7 @@ The canonical manifest currently includes:
 - supported SoRLa IR and IR range
 - artifact references
 - runtime component references
+- optional Rust provider SDK binding metadata
 - configuration schema reference
 - optional OCI reference
 - display metadata
@@ -77,6 +78,18 @@ The release path is:
 5. attach the same generated outputs to the GitHub Release
 
 The canonical source of truth remains the generated local manifest and pack layout.
+
+## Provider SDK Binding
+
+Provider packs can include `sdk_binding` to identify the Rust crate boundary a runtime should bind against:
+
+- `package_name`: Cargo package name
+- `crate_name`: Rust crate name
+- `contract_crate`: provider contract crate, currently `sorla-provider-core`
+- `contract_version`: supported provider contract version
+- `factory_symbol`: constructor or factory symbol a runtime adapter can target
+
+This metadata does not make SORX load the provider automatically by itself, but it removes ambiguity for cross-repo runtime adapters that need to connect generated SoRLa packs to concrete provider crates.
 
 ### Published OCI References
 

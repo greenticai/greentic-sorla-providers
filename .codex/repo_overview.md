@@ -10,7 +10,7 @@ It combines shared provider contracts, deterministic pack and catalog generation
 - **Path:** `crates/sorla-provider-core`
   - **Role:** Shared SoRLa provider contract crate.
   - **Key functionality:**
-    - Defines provider metadata, capabilities, health/config validation, event append/read requests and responses, projection persistence/get/rebuild/checkpoint types, external reference resolution types, and evidence query types.
+    - Defines provider metadata, capabilities, health/config validation, event append/read requests and responses, canonical SORX namespace/entity/event records, projection persistence/get/rebuild/checkpoint types, external reference resolution types, evidence query types, and optional index/search projection capability metadata.
     - Exposes the traits implemented by concrete providers.
   - **Key dependencies / integration points:** Used by all provider crates and by the pack/catalog crates.
 
@@ -19,6 +19,7 @@ It combines shared provider contracts, deterministic pack and catalog generation
   - **Key functionality:**
     - Defines canonical pack manifest structures.
     - Generates deterministic local pack outputs and metadata from provider descriptors.
+    - Carries optional Rust provider SDK binding metadata for runtimes that load provider crates.
     - Supports optional OCI reference fields used by release automation.
   - **Key dependencies / integration points:** Consumed by `sorla-provider-pack-cli` and aligned with provider metadata from `sorla-provider-core`.
 
@@ -31,8 +32,8 @@ It combines shared provider contracts, deterministic pack and catalog generation
 - **Path:** `crates/sorla-provider-catalog`
   - **Role:** Machine-readable provider catalog model.
   - **Key functionality:**
-    - Defines catalog entries, compatibility metadata, tags, config schema paths, supported SoRLa IR ranges, and optional OCI references.
-    - Builds catalog artifacts from generated pack/manifests.
+    - Defines catalog entries, compatibility metadata, tags, config schema paths, supported SoRLa IR ranges, optional OCI references, and optional provider SDK binding metadata.
+    - Builds catalog artifacts from generated pack/manifests, including projected ontology, index, and search capability metadata when providers declare it.
   - **Key dependencies / integration points:** Consumed by `sorla-provider-catalog-cli` and aligned with the pack manifest shape.
 
 - **Path:** `crates/sorla-provider-catalog-cli`
@@ -48,6 +49,7 @@ It combines shared provider contracts, deterministic pack and catalog generation
     - Implements event stream reads.
     - Persists and reads projections.
     - Supports checkpoint generation and deterministic replay from checkpoint or full stream.
+    - Exposes deterministic canonical `/sorx/{tenant}/{sor}` keyspace metadata and local/dev atomic canonical writes for event, canonical entity projection, graph edges, and evidence links.
     - Publishes provider metadata for pack/catalog generation.
   - **Key dependencies / integration points:** Implements traits from `sorla-provider-core`; feeds pack/catalog generation.
 

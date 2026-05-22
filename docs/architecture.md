@@ -9,6 +9,7 @@ This workspace is split into three layers.
 - provider identity and compatibility metadata
 - provider health and config validation
 - event append and event stream read
+- canonical SORX namespace, canonical entity records, and canonical event records
 - projection get, rebuild, and checkpoint flow
 - external reference resolution
 - evidence query and evidence resolution
@@ -35,4 +36,3 @@ Current provider crates are stubs:
 - `provider-rag-mock`
 
 Real provider behavior should be added only after contracts, pack manifests, and catalog schemas are stable.
-

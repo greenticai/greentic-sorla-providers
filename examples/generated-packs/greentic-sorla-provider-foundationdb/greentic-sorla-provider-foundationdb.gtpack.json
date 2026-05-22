@@ -8,6 +8,8 @@
     "capabilities": [
       "event-append",
       "event-stream-read",
+      "canonical-state",
+      "canonical-write",
       "projection-get",
       "projection-put",
       "projection-rebuild",
@@ -41,6 +43,13 @@
         "artifact_uri": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.4"
       }
     ],
+    "sdk_binding": {
+      "crate_name": "provider_foundationdb",
+      "package_name": "provider-foundationdb",
+      "contract_crate": "sorla-provider-core",
+      "contract_version": "0.1.0",
+      "factory_symbol": "FoundationDbProvider::new"
+    },
     "config_schema": {
       "format": "json-schema",
       "path": "schemas/provider-config.schema.json",
@@ -72,7 +81,15 @@
         "*"
       ],
       "max_traversal_depth": 8,
-      "supports_policy_context": false
+      "supports_policy_context": false,
+      "index_capabilities": {
+        "exact": false,
+        "composite": false
+      },
+      "search_capabilities": {
+        "text_projection": "unavailable",
+        "vector_projection": "unavailable"
+      }
     }
   }
 }

@@ -25,6 +25,16 @@ pub struct RuntimeComponentRef {
     pub artifact_uri: String,
 }
 
+/// Rust provider SDK binding metadata for runtimes that load provider crates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderSdkBinding {
+    pub crate_name: String,
+    pub package_name: String,
+    pub contract_crate: String,
+    pub contract_version: String,
+    pub factory_symbol: String,
+}
+
 /// Configuration schema reference shipped with a generated provider pack.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigSchemaRef {
@@ -55,6 +65,8 @@ pub struct ProviderPackManifest {
     pub supported_sorla_ir_range: String,
     pub artifact_references: Vec<ArtifactReference>,
     pub runtime_components: Vec<RuntimeComponentRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sdk_binding: Option<ProviderSdkBinding>,
     pub config_schema: ConfigSchemaRef,
     pub oci_reference: Option<String>,
     pub display: DisplayMetadata,
@@ -113,6 +125,7 @@ impl ProviderPackManifest {
             supported_sorla_ir_range: metadata.compatibility.supported_sorla_ir_range.clone(),
             artifact_references,
             runtime_components,
+            sdk_binding: None,
             config_schema,
             oci_reference,
             display: DisplayMetadata {
@@ -133,6 +146,11 @@ impl ProviderPackManifest {
 
     pub fn provider_slug(&self) -> String {
         provider_slug(&self.provider_id)
+    }
+
+    pub fn with_sdk_binding(mut self, sdk_binding: ProviderSdkBinding) -> Self {
+        self.sdk_binding = Some(sdk_binding);
+        self
     }
 }
 
@@ -168,6 +186,21 @@ pub fn provider_runtime_component(
         kind: "service".into(),
         entrypoint: entrypoint.into(),
         artifact_uri: provider_runtime_oci_reference(provider_id, version),
+    }
+}
+
+pub fn provider_sdk_binding(
+    package_name: impl Into<String>,
+    crate_name: impl Into<String>,
+    contract_version: impl Into<String>,
+    factory_symbol: impl Into<String>,
+) -> ProviderSdkBinding {
+    ProviderSdkBinding {
+        crate_name: crate_name.into(),
+        package_name: package_name.into(),
+        contract_crate: "sorla-provider-core".into(),
+        contract_version: contract_version.into(),
+        factory_symbol: factory_symbol.into(),
     }
 }
 
@@ -301,6 +334,8 @@ mod tests {
             supported_relationship_types: vec![],
             max_traversal_depth: Some(1),
             supports_policy_context: false,
+            index_capabilities: None,
+            search_capabilities: None,
         }
     }
 
@@ -314,7 +349,27 @@ mod tests {
         );
         assert_eq!(manifest.artifact_references.len(), 1);
         assert_eq!(manifest.runtime_components.len(), 1);
+        assert!(manifest.sdk_binding.is_none());
         assert!(manifest.is_mock);
+    }
+
+    #[test]
+    fn sdk_binding_serializes_provider_contract_boundary() {
+        let manifest = sample_manifest().with_sdk_binding(super::provider_sdk_binding(
+            "provider-sharepoint-mock",
+            "provider_sharepoint_mock",
+            SORLA_PROVIDER_CONTRACT_VERSION,
+            "SharePointMockProvider::new",
+        ));
+
+        let json = serde_json::to_string(&manifest).expect("manifest should serialize");
+        let parsed: ProviderPackManifest =
+            serde_json::from_str(&json).expect("manifest should deserialize");
+
+        let binding = parsed.sdk_binding.expect("sdk binding should exist");
+        assert_eq!(binding.contract_crate, "sorla-provider-core");
+        assert_eq!(binding.crate_name, "provider_sharepoint_mock");
+        assert!(json.contains("SharePointMockProvider::new"));
     }
 
     #[test]
