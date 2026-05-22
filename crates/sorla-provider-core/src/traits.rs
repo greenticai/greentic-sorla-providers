@@ -1,9 +1,10 @@
 use crate::types::{
-    AppendEventRequest, EntityLink, EntityLinkRequest, EntityRecord, EntityRef, EntitySearchQuery,
-    EventRecord, EventStreamRequest, EvidenceItem, EvidenceQuery, ExternalReferencePayload,
+    AppendEventRequest, CanonicalEntityRecord, CanonicalWriteRequest, CanonicalWriteResult,
+    EntityLink, EntityLinkRequest, EntityRecord, EntityRef, EntitySearchQuery, EventRecord,
+    EventStreamRequest, EvidenceItem, EvidenceQuery, ExternalReferencePayload,
     ExternalReferenceRequest, HealthReport, OntologyPath, PackEmission, PathQuery,
     PersistProjectionRequest, ProjectionCheckpoint, ProjectionRebuildRequest, ProjectionRecord,
-    ProviderError, ProviderMetadata, RelationshipInstance, RelationshipQuery,
+    ProviderError, ProviderMetadata, RelationshipInstance, RelationshipQuery, SorNamespace,
 };
 
 /// Exposes stable provider identity and capability metadata.
@@ -69,6 +70,32 @@ pub trait EntityStoreProvider {
         &self,
         request: EntitySearchQuery,
     ) -> Result<Vec<EntityRecord>, ProviderError>;
+}
+
+/// Canonical SORX entity storage capabilities.
+///
+/// This is a canonical source-of-record contract rather than a replacement for
+/// the generic ontology `EntityStoreProvider`. Implementations may expose both
+/// when they can persist canonical revisions and also serve generic entity refs.
+pub trait CanonicalEntityStoreProvider {
+    fn upsert_canonical_entity(
+        &self,
+        record: CanonicalEntityRecord,
+    ) -> Result<CanonicalEntityRecord, ProviderError>;
+    fn get_canonical_entity(
+        &self,
+        namespace: SorNamespace,
+        entity_type: &str,
+        entity_id: &str,
+    ) -> Result<Option<CanonicalEntityRecord>, ProviderError>;
+}
+
+/// Atomic canonical SORX write capabilities.
+pub trait CanonicalWriteProvider {
+    fn apply_canonical_write(
+        &self,
+        request: CanonicalWriteRequest,
+    ) -> Result<CanonicalWriteResult, ProviderError>;
 }
 
 /// Generic ontology graph traversal capabilities.

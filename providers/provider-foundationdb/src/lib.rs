@@ -6,22 +6,38 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 use sorla_provider_catalog::{ProviderCatalogEntry, ProviderCatalogOntology};
 use sorla_provider_core::{
-    AppendEventRequest, ConfigValidator, ContractCompatibility, EntityLink, EntityLinkProvider,
-    EntityLinkRequest, EntityRecord, EntityRef, EntitySearchQuery, EntityStoreProvider,
-    EventRecord, EventStoreProvider, EventStreamRequest, HealthReport, HealthState,
-    OntologyContractCompatibility, OntologyPath, OntologyPathStep, PackEmission, PathQuery,
-    PersistProjectionRequest, ProjectionCheckpoint, ProjectionProvider, ProjectionRebuildRequest,
-    ProjectionRecord, ProviderCapability, ProviderError, ProviderHealth, ProviderMetadata,
-    ProviderMetadataSource, ProviderOntologyCapabilities, ProviderStatus, RelationshipDirection,
-    RelationshipInstance, RelationshipQuery, SORLA_PROVIDER_CONTRACT_VERSION,
+    AppendEventRequest, CanonicalEntityRecord, CanonicalEntityStoreProvider,
+    CanonicalWriteProvider, CanonicalWriteRequest, CanonicalWriteResult, ConfigValidator,
+    ContractCompatibility, EntityLink, EntityLinkProvider, EntityLinkRequest, EntityRecord,
+    EntityRef, EntitySearchQuery, EntityStoreProvider, EventRecord, EventStoreProvider,
+    EventStreamRequest, HealthReport, HealthState, OntologyContractCompatibility, OntologyPath,
+    OntologyPathStep, PackEmission, PathQuery, PersistProjectionRequest, ProjectionCheckpoint,
+    ProjectionProvider, ProjectionRebuildRequest, ProjectionRecord, ProjectionSupport,
+    ProviderCapability, ProviderError, ProviderHealth, ProviderIndexCapabilities, ProviderMetadata,
+    ProviderMetadataSource, ProviderOntologyCapabilities, ProviderSearchCapabilities,
+    ProviderStatus, RelationshipDirection, RelationshipInstance, RelationshipQuery,
+    SORLA_PROVIDER_CONTRACT_VERSION, SorEventRecord, SorNamespace,
 };
 use sorla_provider_pack::{
     ArtifactReference, ConfigSchemaRef, ProviderPackManifest, provider_artifact_file_uri,
-    provider_runtime_component,
+    provider_runtime_component, provider_sdk_binding,
 };
 
 const PROVIDER_ID: &str = "greentic.sorla.provider.foundationdb";
 const PROVIDER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub fn encode_key_segment(input: &str) -> String {
+    let mut encoded = String::new();
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
+                encoded.push(char::from(byte));
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FoundationDbConfig {
@@ -45,6 +61,28 @@ pub struct KeyspaceLayout {
     pub evidence_links_prefix: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalKeyspaceLayout {
+    pub current_schema_key: String,
+    pub canonical_version_key: String,
+    pub active_views_prefix: String,
+    pub entities_prefix: String,
+    pub entity_versions_prefix: String,
+    pub events_prefix: String,
+    pub events_by_entity_prefix: String,
+    pub events_by_time_prefix: String,
+    pub edges_out_prefix: String,
+    pub edges_in_prefix: String,
+    pub indexes_prefix: String,
+    pub composite_indexes_prefix: String,
+    pub external_refs_prefix: String,
+    pub external_refs_by_entity_prefix: String,
+    pub evidence_prefix: String,
+    pub evidence_by_entity_prefix: String,
+    pub migrations_prefix: String,
+    pub deployments_prefix: String,
+}
+
 #[derive(Debug, Clone)]
 struct ProjectionState {
     record: ProjectionRecord,
@@ -54,6 +92,9 @@ struct ProjectionState {
 #[derive(Debug, Default)]
 struct InMemoryFoundationDb {
     streams: HashMap<String, Vec<EventRecord>>,
+    canonical_streams: HashMap<String, Vec<SorEventRecord>>,
+    canonical_entities: HashMap<String, CanonicalEntityRecord>,
+    idempotency_keys: HashMap<String, String>,
     projections: HashMap<(String, String), ProjectionState>,
     entities: HashMap<String, EntityRecord>,
     relationships: Vec<RelationshipInstance>,
@@ -120,6 +161,34 @@ impl FoundationDbProvider {
         }
     }
 
+    pub fn canonical_keyspace_layout(namespace: &SorNamespace) -> CanonicalKeyspaceLayout {
+        let prefix = format!(
+            "/sorx/{}/{}",
+            encode_key_segment(&namespace.tenant_id),
+            encode_key_segment(&namespace.sor_id)
+        );
+        CanonicalKeyspaceLayout {
+            current_schema_key: format!("{prefix}/meta/current_schema"),
+            canonical_version_key: format!("{prefix}/meta/canonical_version"),
+            active_views_prefix: format!("{prefix}/meta/active_views"),
+            entities_prefix: format!("{prefix}/entities"),
+            entity_versions_prefix: format!("{prefix}/entity_versions"),
+            events_prefix: format!("{prefix}/events"),
+            events_by_entity_prefix: format!("{prefix}/events_by_entity"),
+            events_by_time_prefix: format!("{prefix}/events_by_time"),
+            edges_out_prefix: format!("{prefix}/edges/out"),
+            edges_in_prefix: format!("{prefix}/edges/in"),
+            indexes_prefix: format!("{prefix}/indexes"),
+            composite_indexes_prefix: format!("{prefix}/composite_indexes"),
+            external_refs_prefix: format!("{prefix}/external_refs"),
+            external_refs_by_entity_prefix: format!("{prefix}/external_refs_by_entity"),
+            evidence_prefix: format!("{prefix}/evidence"),
+            evidence_by_entity_prefix: format!("{prefix}/evidence_by_entity"),
+            migrations_prefix: format!("{prefix}/migrations"),
+            deployments_prefix: format!("{prefix}/deployments"),
+        }
+    }
+
     fn entity_key(entity: &EntityRef) -> String {
         format!(
             "{}\u{1f}{}\u{1f}{}\u{1f}{}",
@@ -128,6 +197,23 @@ impl FoundationDbProvider {
             entity.entity_id,
             entity.version.as_deref().unwrap_or_default()
         )
+    }
+
+    fn canonical_entity_key(
+        namespace: &SorNamespace,
+        entity_type: &str,
+        entity_id: &str,
+    ) -> String {
+        format!(
+            "{}\u{1f}{}\u{1f}{}",
+            namespace.production_key(),
+            entity_type,
+            entity_id
+        )
+    }
+
+    fn idempotency_key(namespace: &SorNamespace, idempotency_key: &str) -> String {
+        format!("{}\u{1f}{}", namespace.production_key(), idempotency_key)
     }
 
     fn relationship_key(relationship: &RelationshipInstance) -> String {
@@ -148,35 +234,23 @@ impl FoundationDbProvider {
         relationships
     }
 
-    pub fn upsert_relationship(
-        &self,
+    fn upsert_relationship_in_state(
+        state: &mut InMemoryFoundationDb,
         relationship: RelationshipInstance,
-    ) -> Result<RelationshipInstance, ProviderError> {
-        let mut state = self
-            .state
-            .write()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
-
+    ) {
         let key = Self::relationship_key(&relationship);
         if let Some(existing) = state
             .relationships
             .iter_mut()
             .find(|stored| Self::relationship_key(stored) == key)
         {
-            *existing = relationship.clone();
+            *existing = relationship;
         } else {
-            state.relationships.push(relationship.clone());
+            state.relationships.push(relationship);
         }
-
-        Ok(relationship)
     }
 
-    pub fn upsert_evidence_link(&self, link: EntityLink) -> Result<EntityLink, ProviderError> {
-        let mut state = self
-            .state
-            .write()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
-
+    fn upsert_evidence_link_in_state(state: &mut InMemoryFoundationDb, link: EntityLink) {
         let entity_key = Self::entity_key(&link.entity);
         let links = state.evidence_links.entry(entity_key).or_default();
         let link_key = (
@@ -191,10 +265,33 @@ impl FoundationDbProvider {
                 stored.match_kind.clone(),
             ) == link_key
         }) {
-            *existing = link.clone();
+            *existing = link;
         } else {
-            links.push(link.clone());
+            links.push(link);
         }
+    }
+
+    pub fn upsert_relationship(
+        &self,
+        relationship: RelationshipInstance,
+    ) -> Result<RelationshipInstance, ProviderError> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+
+        Self::upsert_relationship_in_state(&mut state, relationship.clone());
+
+        Ok(relationship)
+    }
+
+    pub fn upsert_evidence_link(&self, link: EntityLink) -> Result<EntityLink, ProviderError> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+
+        Self::upsert_evidence_link_in_state(&mut state, link.clone());
 
         Ok(link)
     }
@@ -253,6 +350,8 @@ impl ProviderMetadataSource for FoundationDbProvider {
             capabilities: vec![
                 ProviderCapability::EventAppend,
                 ProviderCapability::EventStreamRead,
+                ProviderCapability::CanonicalState,
+                ProviderCapability::CanonicalWrite,
                 ProviderCapability::ProjectionGet,
                 ProviderCapability::ProjectionPut,
                 ProviderCapability::ProjectionRebuild,
@@ -290,6 +389,14 @@ impl ProviderMetadataSource for FoundationDbProvider {
                 supported_relationship_types: vec!["*".into()],
                 max_traversal_depth: Some(8),
                 supports_policy_context: false,
+                index_capabilities: Some(ProviderIndexCapabilities {
+                    exact: false,
+                    composite: false,
+                }),
+                search_capabilities: Some(ProviderSearchCapabilities {
+                    text_projection: ProjectionSupport::Unavailable,
+                    vector_projection: ProjectionSupport::Unavailable,
+                }),
             }),
         }
     }
@@ -536,6 +643,142 @@ impl EntityStoreProvider for FoundationDbProvider {
     }
 }
 
+impl CanonicalEntityStoreProvider for FoundationDbProvider {
+    fn upsert_canonical_entity(
+        &self,
+        record: CanonicalEntityRecord,
+    ) -> Result<CanonicalEntityRecord, ProviderError> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+
+        state.canonical_entities.insert(
+            Self::canonical_entity_key(&record.namespace, &record.entity_type, &record.entity_id),
+            record.clone(),
+        );
+        state.entities.insert(
+            Self::entity_key(&record.entity_ref()),
+            EntityRecord {
+                entity: record.entity_ref(),
+                label: None,
+                metadata_json: Some(record.data_json.to_string()),
+            },
+        );
+
+        Ok(record)
+    }
+
+    fn get_canonical_entity(
+        &self,
+        namespace: SorNamespace,
+        entity_type: &str,
+        entity_id: &str,
+    ) -> Result<Option<CanonicalEntityRecord>, ProviderError> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+
+        Ok(state
+            .canonical_entities
+            .get(&Self::canonical_entity_key(
+                &namespace,
+                entity_type,
+                entity_id,
+            ))
+            .cloned())
+    }
+}
+
+impl CanonicalWriteProvider for FoundationDbProvider {
+    fn apply_canonical_write(
+        &self,
+        request: CanonicalWriteRequest,
+    ) -> Result<CanonicalWriteResult, ProviderError> {
+        if request.event.namespace != request.entity.namespace {
+            return Err(ProviderError::Validation(
+                "event and entity namespaces must match".into(),
+            ));
+        }
+        if request.event.entity_ref.entity_type != request.entity.entity_type
+            || request.event.entity_ref.entity_id != request.entity.entity_id
+        {
+            return Err(ProviderError::Validation(
+                "event entity_ref must target the canonical entity".into(),
+            ));
+        }
+
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+
+        if let Some(idempotency_key) = request.event.idempotency_key.as_deref() {
+            let key = Self::idempotency_key(&request.event.namespace, idempotency_key);
+            if state.idempotency_keys.contains_key(&key) {
+                return Err(ProviderError::Validation(format!(
+                    "idempotency key {idempotency_key} was already applied"
+                )));
+            }
+        }
+
+        let last_sequence = state
+            .canonical_streams
+            .get(&request.event.stream_id)
+            .and_then(|events| events.last())
+            .map(|event| event.sequence)
+            .unwrap_or(0);
+        if request.event.sequence != last_sequence + 1 {
+            return Err(ProviderError::Validation(format!(
+                "event sequence {} did not follow stream sequence {last_sequence}",
+                request.event.sequence
+            )));
+        }
+
+        state
+            .canonical_streams
+            .entry(request.event.stream_id.clone())
+            .or_default()
+            .push(request.event.clone());
+        state.canonical_entities.insert(
+            Self::canonical_entity_key(
+                &request.entity.namespace,
+                &request.entity.entity_type,
+                &request.entity.entity_id,
+            ),
+            request.entity.clone(),
+        );
+        state.entities.insert(
+            Self::entity_key(&request.entity.entity_ref()),
+            EntityRecord {
+                entity: request.entity.entity_ref(),
+                label: None,
+                metadata_json: Some(request.entity.data_json.to_string()),
+            },
+        );
+        for relationship in request.relationships.iter().cloned() {
+            Self::upsert_relationship_in_state(&mut state, relationship);
+        }
+        for link in request.entity_links.iter().cloned() {
+            Self::upsert_evidence_link_in_state(&mut state, link);
+        }
+        if let Some(idempotency_key) = request.event.idempotency_key.as_deref() {
+            state.idempotency_keys.insert(
+                Self::idempotency_key(&request.event.namespace, idempotency_key),
+                request.event.event_id.clone(),
+            );
+        }
+
+        Ok(CanonicalWriteResult {
+            event: request.event,
+            entity: request.entity,
+            relationships_written: request.relationships.len(),
+            entity_links_written: request.entity_links.len(),
+        })
+    }
+}
+
 impl sorla_provider_core::OntologyGraphProvider for FoundationDbProvider {
     fn query_relationships(
         &self,
@@ -708,6 +951,12 @@ pub fn pack_manifest() -> ProviderPackManifest {
             schema_json: r#"{"type":"object","required":["cluster_file","tenant_prefix"],"properties":{"cluster_file":{"type":"string"},"tenant_prefix":{"type":"string"}},"additionalProperties":false}"#.into(),
         },
     )
+    .with_sdk_binding(provider_sdk_binding(
+        "provider-foundationdb",
+        "provider_foundationdb",
+        SORLA_PROVIDER_CONTRACT_VERSION,
+        "FoundationDbProvider::new",
+    ))
 }
 
 pub fn catalog_entry() -> ProviderCatalogEntry {
@@ -729,6 +978,7 @@ pub fn catalog_entry() -> ProviderCatalogEntry {
             .first()
             .map(|item| item.uri.clone()),
         oci_reference: manifest.oci_reference,
+        sdk_binding: manifest.sdk_binding,
         ontology: manifest.ontology_capabilities.as_ref().map(|capabilities| {
             ProviderCatalogOntology {
                 capabilities: vec![
@@ -756,6 +1006,8 @@ pub fn catalog_entry() -> ProviderCatalogEntry {
                     .compatibility
                     .supported_external_mapping_schema
                     .clone(),
+                index_capabilities: capabilities.index_capabilities.clone(),
+                search_capabilities: capabilities.search_capabilities.clone(),
             }
         }),
     }
@@ -765,13 +1017,17 @@ pub fn catalog_entry() -> ProviderCatalogEntry {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::{FoundationDbConfig, FoundationDbProvider, catalog_entry, pack_manifest};
+    use super::{
+        FoundationDbConfig, FoundationDbProvider, catalog_entry, encode_key_segment, pack_manifest,
+    };
     use sorla_provider_core::{
-        AppendEventRequest, ConfigValidator, EntityLink, EntityLinkProvider, EntityLinkRequest,
-        EntityRecord, EntityRef, EntitySearchQuery, EntityStoreProvider, EventStoreProvider,
-        OntologyGraphProvider, PathQuery, PersistProjectionRequest, ProjectionProvider,
-        ProjectionRebuildRequest, ProviderCapability, ProviderHealth, ProviderMetadataSource,
-        RelationshipDirection, RelationshipInstance, RelationshipQuery, RelationshipRef,
+        AppendEventRequest, CanonicalEntityRecord, CanonicalEntityStoreProvider,
+        CanonicalWriteProvider, CanonicalWriteRequest, ConfigValidator, EntityLink,
+        EntityLinkProvider, EntityLinkRequest, EntityRecord, EntityRef, EntitySearchQuery,
+        EntityStoreProvider, EventStoreProvider, OntologyGraphProvider, PathQuery,
+        PersistProjectionRequest, ProjectionProvider, ProjectionRebuildRequest, ProviderCapability,
+        ProviderHealth, ProviderMetadataSource, RelationshipDirection, RelationshipInstance,
+        RelationshipQuery, RelationshipRef, SorEventRecord, SorNamespace,
     };
 
     fn entity(entity_type: &str, entity_id: &str) -> EntityRef {
@@ -796,6 +1052,46 @@ mod tests {
             },
             metadata_json: None,
             provenance: Some("test".into()),
+        }
+    }
+
+    fn namespace() -> SorNamespace {
+        SorNamespace {
+            tenant_id: "tenant/acme".into(),
+            sor_id: "contracts".into(),
+            environment_id: None,
+        }
+    }
+
+    fn canonical_entity(revision: u64) -> CanonicalEntityRecord {
+        CanonicalEntityRecord {
+            namespace: namespace(),
+            entity_type: "Contract".into(),
+            entity_id: "contract-001".into(),
+            canonical_version: "2026-05-22".into(),
+            revision,
+            data_json: serde_json::json!({"status": "active", "revision": revision}),
+            created_at: "2026-05-22T10:00:00Z".into(),
+            updated_at: "2026-05-22T11:00:00Z".into(),
+        }
+    }
+
+    fn canonical_event(sequence: u64, idempotency_key: Option<&str>) -> SorEventRecord {
+        let entity = canonical_entity(sequence);
+        SorEventRecord {
+            namespace: entity.namespace.clone(),
+            event_id: format!("evt-{sequence:03}"),
+            stream_id: "Contract/contract-001".into(),
+            sequence,
+            event_type: "contract.updated".into(),
+            entity_ref: entity.entity_ref(),
+            command_id: Some(format!("cmd-{sequence:03}")),
+            idempotency_key: idempotency_key.map(str::to_owned),
+            actor: Some("test".into()),
+            source_view_version: Some("view-v1".into()),
+            canonical_version: entity.canonical_version,
+            payload_json: serde_json::json!({"sequence": sequence}),
+            timestamp: "2026-05-22T11:00:00Z".into(),
         }
     }
 
@@ -976,6 +1272,37 @@ mod tests {
     }
 
     #[test]
+    fn canonical_keyspace_layout_uses_sorx_namespace_without_environment() {
+        let prod = SorNamespace {
+            tenant_id: "tenant/acme".into(),
+            sor_id: "contracts".into(),
+            environment_id: None,
+        };
+        let dev = SorNamespace {
+            environment_id: Some("dev".into()),
+            ..prod.clone()
+        };
+
+        assert_eq!(encode_key_segment("tenant/acme"), "tenant%2Facme");
+        let prod_layout = FoundationDbProvider::canonical_keyspace_layout(&prod);
+        let dev_layout = FoundationDbProvider::canonical_keyspace_layout(&dev);
+
+        assert_eq!(prod_layout, dev_layout);
+        assert_eq!(
+            prod_layout.current_schema_key,
+            "/sorx/tenant%2Facme/contracts/meta/current_schema"
+        );
+        assert_eq!(
+            prod_layout.entity_versions_prefix,
+            "/sorx/tenant%2Facme/contracts/entity_versions"
+        );
+        assert_eq!(
+            prod_layout.deployments_prefix,
+            "/sorx/tenant%2Facme/contracts/deployments"
+        );
+    }
+
+    #[test]
     fn entities_can_be_inserted_read_and_searched() {
         let provider = FoundationDbProvider::for_tests();
         let customer = EntityRecord {
@@ -1003,6 +1330,121 @@ mod tests {
 
         assert_eq!(stored, customer);
         assert_eq!(found, vec![customer]);
+    }
+
+    #[test]
+    fn canonical_entities_can_be_upserted_read_and_projected_to_generic_entities() {
+        let provider = FoundationDbProvider::for_tests();
+        let record = canonical_entity(1);
+
+        provider
+            .upsert_canonical_entity(record.clone())
+            .expect("canonical upsert should succeed");
+        let stored = provider
+            .get_canonical_entity(
+                record.namespace.clone(),
+                &record.entity_type,
+                &record.entity_id,
+            )
+            .expect("canonical read should succeed")
+            .expect("canonical entity should exist");
+        let generic = provider
+            .get_entity(record.entity_ref())
+            .expect("generic read should succeed")
+            .expect("generic entity projection should exist");
+
+        assert_eq!(stored, record);
+        assert_eq!(generic.metadata_json, Some(record.data_json.to_string()));
+    }
+
+    #[test]
+    fn canonical_write_atomically_appends_event_updates_projection_and_edges() {
+        let provider = FoundationDbProvider::for_tests();
+        let record = canonical_entity(1);
+        let document = entity("EvidenceDocument", "doc-001");
+        let relationship = relationship("supported_by", record.entity_ref(), document.clone());
+        let link = EntityLink {
+            entity: document.clone(),
+            source_ref: "sharepoint://tenant/acme/document/doc-001".into(),
+            evidence_id: Some("evidence-001".into()),
+            confidence: 1.0,
+            match_kind: "external-id".into(),
+            provenance: "test".into(),
+            metadata_json: None,
+        };
+
+        let result = provider
+            .apply_canonical_write(CanonicalWriteRequest {
+                event: canonical_event(1, Some("idem-001")),
+                entity: record.clone(),
+                relationships: vec![relationship.clone()],
+                entity_links: vec![link.clone()],
+            })
+            .expect("canonical write should succeed");
+
+        assert_eq!(result.relationships_written, 1);
+        assert_eq!(result.entity_links_written, 1);
+        assert_eq!(
+            provider
+                .get_canonical_entity(
+                    record.namespace.clone(),
+                    &record.entity_type,
+                    &record.entity_id
+                )
+                .expect("read should succeed"),
+            Some(record.clone())
+        );
+        assert_eq!(
+            provider
+                .query_relationships(RelationshipQuery {
+                    root_entities: vec![document],
+                    relationship_type: Some("supported_by".into()),
+                    direction: RelationshipDirection::Incoming,
+                    max_depth: Some(1),
+                    limit: 10,
+                })
+                .expect("reverse edge lookup should succeed"),
+            vec![relationship]
+        );
+        assert_eq!(
+            provider
+                .link_entities(EntityLinkRequest {
+                    source_ref: Some(link.source_ref.clone()),
+                    evidence_id: link.evidence_id.clone(),
+                    content_json: None,
+                    candidate_types: vec![],
+                    ontology_scope: None,
+                })
+                .expect("link lookup should succeed"),
+            vec![link]
+        );
+    }
+
+    #[test]
+    fn canonical_write_rejects_duplicate_idempotency_without_partial_projection() {
+        let provider = FoundationDbProvider::for_tests();
+        provider
+            .apply_canonical_write(CanonicalWriteRequest {
+                event: canonical_event(1, Some("idem-001")),
+                entity: canonical_entity(1),
+                relationships: vec![],
+                entity_links: vec![],
+            })
+            .expect("first write should succeed");
+
+        let duplicate = provider.apply_canonical_write(CanonicalWriteRequest {
+            event: canonical_event(2, Some("idem-001")),
+            entity: canonical_entity(2),
+            relationships: vec![],
+            entity_links: vec![],
+        });
+        let stored = provider
+            .get_canonical_entity(namespace(), "Contract", "contract-001")
+            .expect("canonical read should succeed")
+            .expect("canonical entity should exist");
+
+        assert!(duplicate.is_err());
+        assert_eq!(stored.revision, 1);
     }
 
     #[test]

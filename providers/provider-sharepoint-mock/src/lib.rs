@@ -13,7 +13,7 @@ use sorla_provider_core::{
 };
 use sorla_provider_pack::{
     ArtifactReference, ConfigSchemaRef, ProviderPackManifest, provider_artifact_file_uri,
-    provider_runtime_component,
+    provider_runtime_component, provider_sdk_binding,
 };
 
 const PROVIDER_ID: &str = "greentic.sorla.provider.sharepoint-mock";
@@ -431,6 +431,8 @@ impl ProviderMetadataSource for SharePointMockProvider {
                 supported_relationship_types: vec![],
                 max_traversal_depth: None,
                 supports_policy_context: false,
+                index_capabilities: None,
+                search_capabilities: None,
             }),
         }
     }
@@ -611,6 +613,12 @@ pub fn pack_manifest() -> ProviderPackManifest {
             schema_json: r#"{"type":"object","required":["seed","tenant_id"],"properties":{"seed":{"type":"string"},"tenant_id":{"type":"string"}},"additionalProperties":false}"#.into(),
         },
     )
+    .with_sdk_binding(provider_sdk_binding(
+        "provider-sharepoint-mock",
+        "provider_sharepoint_mock",
+        SORLA_PROVIDER_CONTRACT_VERSION,
+        "SharePointMockProvider::new",
+    ))
 }
 
 pub fn catalog_entry() -> ProviderCatalogEntry {
@@ -632,6 +640,7 @@ pub fn catalog_entry() -> ProviderCatalogEntry {
             .first()
             .map(|item| item.uri.clone()),
         oci_reference: manifest.oci_reference,
+        sdk_binding: manifest.sdk_binding,
         ontology: manifest.ontology_capabilities.as_ref().map(|capabilities| {
             ProviderCatalogOntology {
                 capabilities: vec![ProviderCapability::EntityLink],
@@ -653,6 +662,8 @@ pub fn catalog_entry() -> ProviderCatalogEntry {
                     .compatibility
                     .supported_external_mapping_schema
                     .clone(),
+                index_capabilities: capabilities.index_capabilities.clone(),
+                search_capabilities: capabilities.search_capabilities.clone(),
             }
         }),
     }

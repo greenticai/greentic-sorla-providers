@@ -1,5 +1,6 @@
 use semver::VersionReq;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 
 /// Shared error model for provider contract implementations.
@@ -19,6 +20,8 @@ pub enum ProviderError {
 pub enum ProviderCapability {
     EventAppend,
     EventStreamRead,
+    CanonicalState,
+    CanonicalWrite,
     ProjectionGet,
     ProjectionPut,
     ProjectionRebuild,
@@ -32,6 +35,8 @@ pub enum ProviderCapability {
     OntologyModelRead,
     EntityRead,
     EntitySearch,
+    ExactIndex,
+    CompositeIndex,
     RelationshipRead,
     RelationshipQuery,
     PathFind,
@@ -41,6 +46,8 @@ pub enum ProviderCapability {
     OntologyScopedEvidenceQuery,
     HybridEvidenceQuery,
     PolicyContextResolve,
+    TextSearchProjection,
+    VectorSearchProjection,
 }
 
 /// Lifecycle status for a provider implementation.
@@ -114,6 +121,33 @@ pub struct ProviderOntologyCapabilities {
     pub supported_relationship_types: Vec<String>,
     pub max_traversal_depth: Option<u8>,
     pub supports_policy_context: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_capabilities: Option<ProviderIndexCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_capabilities: Option<ProviderSearchCapabilities>,
+}
+
+/// Structured index support metadata for provider discovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderIndexCapabilities {
+    pub exact: bool,
+    pub composite: bool,
+}
+
+/// Whether a projection is unavailable, optional, or required for a provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProjectionSupport {
+    Unavailable,
+    Optional,
+    Required,
+}
+
+/// Structured search projection support metadata for provider discovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderSearchCapabilities {
+    pub text_projection: ProjectionSupport,
+    pub vector_projection: ProjectionSupport,
 }
 
 /// Compatibility gates for ontology-aware provider metadata.
@@ -163,6 +197,100 @@ pub struct EventRecord {
     pub revision: u64,
     pub event_type: String,
     pub payload: String,
+}
+
+/// Production source-of-record namespace for canonical SORX state.
+///
+/// Durable production records are scoped by `tenant_id + sor_id`. `environment_id`
+/// may be used to isolate local, test, or staging state, but it must not replace
+/// the production source-of-record boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SorNamespace {
+    pub tenant_id: String,
+    pub sor_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
+}
+
+impl SorNamespace {
+    pub fn production_key(&self) -> String {
+        format!("{}\u{1f}{}", self.tenant_id, self.sor_id)
+    }
+
+    pub fn to_entity_namespace(&self) -> String {
+        match self.environment_id.as_deref() {
+            Some(environment_id) => {
+                format!("{}/{}/{}", self.tenant_id, self.sor_id, environment_id)
+            }
+            None => format!("{}/{}", self.tenant_id, self.sor_id),
+        }
+    }
+}
+
+/// Canonical persisted entity record for SORX state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanonicalEntityRecord {
+    pub namespace: SorNamespace,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub canonical_version: String,
+    pub revision: u64,
+    pub data_json: Value,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl CanonicalEntityRecord {
+    pub fn entity_ref(&self) -> EntityRef {
+        EntityRef {
+            entity_type: self.entity_type.clone(),
+            entity_id: self.entity_id.clone(),
+            namespace: Some(self.namespace.to_entity_namespace()),
+            version: Some(self.canonical_version.clone()),
+        }
+    }
+}
+
+/// Immutable event record for canonical SORX streams.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SorEventRecord {
+    pub namespace: SorNamespace,
+    pub event_id: String,
+    pub stream_id: String,
+    pub sequence: u64,
+    pub event_type: String,
+    pub entity_ref: EntityRef,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_view_version: Option<String>,
+    pub canonical_version: String,
+    pub payload_json: Value,
+    pub timestamp: String,
+}
+
+/// Canonical write request that must be applied atomically by durable providers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanonicalWriteRequest {
+    pub event: SorEventRecord,
+    pub entity: CanonicalEntityRecord,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relationships: Vec<RelationshipInstance>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_links: Vec<EntityLink>,
+}
+
+/// Result returned after an atomic canonical write.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanonicalWriteResult {
+    pub event: SorEventRecord,
+    pub entity: CanonicalEntityRecord,
+    pub relationships_written: usize,
+    pub entity_links_written: usize,
 }
 
 /// Request for stream reads.

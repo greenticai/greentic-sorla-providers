@@ -4,8 +4,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sorla_provider_core::{ProviderCapability, ProviderStatus};
-use sorla_provider_pack::ProviderPackManifest;
+use sorla_provider_core::{
+    ProviderCapability, ProviderIndexCapabilities, ProviderSearchCapabilities, ProviderStatus,
+};
+use sorla_provider_pack::{ProviderPackManifest, ProviderSdkBinding};
 
 /// Catalog entry generated from a provider pack manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +26,8 @@ pub struct ProviderCatalogEntry {
     pub artifact_uri: Option<String>,
     pub oci_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub sdk_binding: Option<ProviderSdkBinding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ontology: Option<ProviderCatalogOntology>,
 }
 
@@ -37,6 +41,10 @@ pub struct ProviderCatalogOntology {
     pub supported_ontology_schema_range: String,
     pub supported_retrieval_binding_schema: Option<String>,
     pub supported_external_mapping_schema: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_capabilities: Option<ProviderIndexCapabilities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_capabilities: Option<ProviderSearchCapabilities>,
 }
 
 /// Deterministic catalog output for SoRLa wizard discovery.
@@ -109,6 +117,8 @@ fn ontology_for_manifest(manifest: &ProviderPackManifest) -> Option<ProviderCata
             .compatibility
             .supported_external_mapping_schema
             .clone(),
+        index_capabilities: ontology.index_capabilities.clone(),
+        search_capabilities: ontology.search_capabilities.clone(),
     })
 }
 
@@ -135,6 +145,7 @@ impl ProviderCatalog {
                     .first()
                     .map(|item| item.uri.clone()),
                 oci_reference: manifest.oci_reference.clone(),
+                sdk_binding: manifest.sdk_binding.clone(),
                 ontology: ontology_for_manifest(manifest),
             })
             .collect::<Vec<_>>();
@@ -243,6 +254,8 @@ mod tests {
             supported_relationship_types: vec![],
             max_traversal_depth: Some(1),
             supports_policy_context: false,
+            index_capabilities: None,
+            search_capabilities: None,
         });
         manifest
     }
@@ -256,10 +269,30 @@ mod tests {
 
         assert_eq!(catalog.entries[0].provider_id, "provider-a");
         assert_eq!(catalog.entries[0].tags, vec!["event-store", "real"]);
+        assert!(catalog.entries[0].sdk_binding.is_none());
         assert_eq!(
             catalog.entries[1].artifact_uri.as_deref(),
             Some("./provider-b.gtpack.json")
         );
+    }
+
+    #[test]
+    fn catalog_projects_sdk_binding_from_manifest() {
+        let manifest = manifest("greentic.sorla.provider.foundationdb", "event-store", false)
+            .with_sdk_binding(sorla_provider_pack::provider_sdk_binding(
+                "provider-foundationdb",
+                "provider_foundationdb",
+                SORLA_PROVIDER_CONTRACT_VERSION,
+                "FoundationDbProvider::new",
+            ));
+        let catalog = ProviderCatalog::from_manifests(&[manifest]);
+
+        let binding = catalog.entries[0]
+            .sdk_binding
+            .as_ref()
+            .expect("sdk binding should be projected");
+        assert_eq!(binding.package_name, "provider-foundationdb");
+        assert_eq!(binding.contract_crate, "sorla-provider-core");
     }
 
     #[test]
