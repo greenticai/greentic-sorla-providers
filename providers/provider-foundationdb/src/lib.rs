@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -10,12 +10,16 @@ use sorla_provider_core::{
     CanonicalWriteProvider, CanonicalWriteRequest, CanonicalWriteResult, ConfigValidator,
     ContractCompatibility, EntityLink, EntityLinkProvider, EntityLinkRequest, EntityRecord,
     EntityRef, EntitySearchQuery, EntityStoreProvider, EventRecord, EventStoreProvider,
-    EventStreamRequest, HealthReport, HealthState, OntologyContractCompatibility, OntologyPath,
-    OntologyPathStep, PackEmission, PathQuery, PersistProjectionRequest, ProjectionCheckpoint,
-    ProjectionProvider, ProjectionRebuildRequest, ProjectionRecord, ProjectionSupport,
-    ProviderCapability, ProviderError, ProviderHealth, ProviderIndexCapabilities, ProviderMetadata,
-    ProviderMetadataSource, ProviderOntologyCapabilities, ProviderSearchCapabilities,
-    ProviderStatus, RelationshipDirection, RelationshipInstance, RelationshipQuery,
+    EventStreamRequest, HealthReport, HealthState, MetricProvider, OntologyContractCompatibility,
+    OntologyPath, OntologyPathStep, PackEmission, PathQuery, PersistProjectionRequest,
+    ProjectionCheckpoint, ProjectionProvider, ProjectionRebuildRequest, ProjectionRecord,
+    ProjectionSupport, ProviderCapability, ProviderError, ProviderHealth,
+    ProviderIndexCapabilities, ProviderMetadata, ProviderMetadataSource,
+    ProviderMetricAggregateFunction, ProviderMetricAggregation, ProviderMetricDimension,
+    ProviderMetricFilter, ProviderMetricFilterOperator, ProviderMetricQuery, ProviderMetricResult,
+    ProviderMetricRow, ProviderMetricSource, ProviderMetricTimeBucket, ProviderMetricTimeGrain,
+    ProviderMetricValue, ProviderOntologyCapabilities, ProviderSearchCapabilities, ProviderStatus,
+    RelationshipDirection, RelationshipInstance, RelationshipQuery,
     SORLA_PROVIDER_CONTRACT_VERSION, SorEventRecord, SorNamespace,
 };
 use sorla_provider_pack::{
@@ -87,6 +91,111 @@ pub struct CanonicalKeyspaceLayout {
 struct ProjectionState {
     record: ProjectionRecord,
     checkpoint: ProjectionCheckpoint,
+}
+
+#[derive(Debug, Clone)]
+struct MetricInputRow {
+    values: BTreeMap<String, serde_json::Value>,
+    stable_key: String,
+}
+
+#[derive(Debug, Clone)]
+struct MetricAccumulator {
+    aggregation: ProviderMetricAggregation,
+    count: u64,
+    number_count: u64,
+    sum: f64,
+    min: Option<f64>,
+    max: Option<f64>,
+    distinct: BTreeSet<String>,
+}
+
+impl MetricAccumulator {
+    fn new(aggregation: ProviderMetricAggregation) -> Self {
+        Self {
+            aggregation,
+            count: 0,
+            number_count: 0,
+            sum: 0.0,
+            min: None,
+            max: None,
+            distinct: BTreeSet::new(),
+        }
+    }
+
+    fn record(&mut self, row: &MetricInputRow) {
+        let value = self
+            .aggregation
+            .field
+            .as_ref()
+            .and_then(|field| row.values.get(field));
+
+        match self.aggregation.function {
+            ProviderMetricAggregateFunction::Count => {
+                if self.aggregation.field.is_none() || value.is_some_and(|value| !value.is_null()) {
+                    self.count += 1;
+                }
+            }
+            ProviderMetricAggregateFunction::Sum | ProviderMetricAggregateFunction::Avg => {
+                if let Some(number) = value.and_then(value_as_f64) {
+                    self.sum += number;
+                    self.number_count += 1;
+                }
+            }
+            ProviderMetricAggregateFunction::Min => {
+                if let Some(number) = value.and_then(value_as_f64) {
+                    self.min = Some(self.min.map_or(number, |current| current.min(number)));
+                    self.number_count += 1;
+                }
+            }
+            ProviderMetricAggregateFunction::Max => {
+                if let Some(number) = value.and_then(value_as_f64) {
+                    self.max = Some(self.max.map_or(number, |current| current.max(number)));
+                    self.number_count += 1;
+                }
+            }
+            ProviderMetricAggregateFunction::DistinctCount => {
+                if let Some(value) = value
+                    && !value.is_null()
+                {
+                    self.distinct.insert(metric_json_sort_key(value));
+                }
+            }
+        }
+    }
+
+    fn finish(&self) -> ProviderMetricValue {
+        match self.aggregation.function {
+            ProviderMetricAggregateFunction::Count => {
+                ProviderMetricValue::Number(self.count as f64)
+            }
+            ProviderMetricAggregateFunction::Sum => {
+                if self.number_count == 0 {
+                    ProviderMetricValue::Null
+                } else {
+                    ProviderMetricValue::Number(self.sum)
+                }
+            }
+            ProviderMetricAggregateFunction::Avg => {
+                if self.number_count == 0 {
+                    ProviderMetricValue::Null
+                } else {
+                    ProviderMetricValue::Number(self.sum / self.number_count as f64)
+                }
+            }
+            ProviderMetricAggregateFunction::Min => self
+                .min
+                .map(ProviderMetricValue::Number)
+                .unwrap_or(ProviderMetricValue::Null),
+            ProviderMetricAggregateFunction::Max => self
+                .max
+                .map(ProviderMetricValue::Number)
+                .unwrap_or(ProviderMetricValue::Null),
+            ProviderMetricAggregateFunction::DistinctCount => {
+                ProviderMetricValue::Number(self.distinct.len() as f64)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -336,10 +445,563 @@ impl FoundationDbProvider {
     fn checkpoint_token(projection_name: &str, revision: u64) -> String {
         format!("{projection_name}@{revision}")
     }
+
+    fn metric_capabilities() -> Vec<ProviderCapability> {
+        vec![
+            ProviderCapability::MetricAggregateCount,
+            ProviderCapability::MetricAggregateSum,
+            ProviderCapability::MetricAggregateAvg,
+            ProviderCapability::MetricAggregateMin,
+            ProviderCapability::MetricAggregateMax,
+            ProviderCapability::MetricAggregateDistinctCount,
+            ProviderCapability::MetricDimensionGroupBy,
+            ProviderCapability::MetricTimeBucketHour,
+            ProviderCapability::MetricTimeBucketDay,
+            ProviderCapability::MetricTimeBucketWeek,
+            ProviderCapability::MetricTimeBucketMonth,
+            ProviderCapability::MetricTimeBucketQuarter,
+            ProviderCapability::MetricTimeBucketYear,
+        ]
+    }
+
+    fn metric_rows_for_query(
+        &self,
+        query: &ProviderMetricQuery,
+    ) -> Result<Vec<MetricInputRow>, ProviderError> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+
+        match &query.source {
+            ProviderMetricSource::EventStream { stream_id } => {
+                let events = state.streams.get(stream_id).ok_or_else(|| {
+                    ProviderError::UnknownMetricSource(query.source.description())
+                })?;
+                Ok(events
+                    .iter()
+                    .map(|event| {
+                        let mut values = payload_object(&event.payload)?;
+                        values.insert(
+                            "stream_id".into(),
+                            serde_json::Value::String(event.stream_id.clone()),
+                        );
+                        values.insert(
+                            "event_type".into(),
+                            serde_json::Value::String(event.event_type.clone()),
+                        );
+                        values.insert(
+                            "revision".into(),
+                            serde_json::Value::Number(event.revision.into()),
+                        );
+                        Ok(MetricInputRow {
+                            values,
+                            stable_key: format!("event:{}:{:020}", event.stream_id, event.revision),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ProviderError>>()?)
+            }
+            ProviderMetricSource::CanonicalEntities {
+                namespace,
+                entity_type,
+            } => {
+                let mut rows = state
+                    .canonical_entities
+                    .values()
+                    .filter(|record| {
+                        record.namespace == *namespace && record.entity_type == *entity_type
+                    })
+                    .map(|record| {
+                        let mut values = value_object(&record.data_json).ok_or_else(|| {
+                            ProviderError::MetricExecutionFailed(format!(
+                                "canonical entity {} payload is not an object",
+                                record.entity_id
+                            ))
+                        })?;
+                        values.insert(
+                            "entity_id".into(),
+                            serde_json::Value::String(record.entity_id.clone()),
+                        );
+                        values.insert(
+                            "entity_type".into(),
+                            serde_json::Value::String(record.entity_type.clone()),
+                        );
+                        values.insert(
+                            "canonical_version".into(),
+                            serde_json::Value::String(record.canonical_version.clone()),
+                        );
+                        values.insert(
+                            "revision".into(),
+                            serde_json::Value::Number(record.revision.into()),
+                        );
+                        values.insert(
+                            "created_at".into(),
+                            serde_json::Value::String(record.created_at.clone()),
+                        );
+                        values.insert(
+                            "updated_at".into(),
+                            serde_json::Value::String(record.updated_at.clone()),
+                        );
+                        Ok(MetricInputRow {
+                            values,
+                            stable_key: format!(
+                                "canonical:{}:{}:{}:{:020}",
+                                namespace.production_key(),
+                                record.entity_type,
+                                record.entity_id,
+                                record.revision
+                            ),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ProviderError>>()?;
+                rows.sort_by(|left, right| left.stable_key.cmp(&right.stable_key));
+                if rows.is_empty() {
+                    Err(ProviderError::UnknownMetricSource(
+                        query.source.description(),
+                    ))
+                } else {
+                    Ok(rows)
+                }
+            }
+            ProviderMetricSource::Fixture { name } => metric_fixture_rows(name)
+                .ok_or_else(|| ProviderError::UnknownMetricSource(query.source.description())),
+        }
+    }
+
+    fn validate_metric_query(
+        &self,
+        rows: &[MetricInputRow],
+        query: &ProviderMetricQuery,
+    ) -> Result<(), ProviderError> {
+        if query.aggregations.is_empty() {
+            return Err(ProviderError::InvalidMetricFilter(
+                "at least one aggregation is required".into(),
+            ));
+        }
+
+        let capabilities = self.metadata().capabilities;
+        for aggregation in &query.aggregations {
+            let required = aggregation.function.required_capability();
+            if !capabilities.contains(&required) {
+                return Err(ProviderError::UnsupportedMetricCapability(format!(
+                    "{required:?}"
+                )));
+            }
+            if let Some(field) = aggregation.field.as_deref() {
+                ensure_metric_field(rows, field)?;
+            }
+        }
+        for filter in &query.filters {
+            validate_filter_shape(filter)?;
+            ensure_metric_field(rows, &filter.field)?;
+        }
+        for dimension in &query.dimensions {
+            if !capabilities.contains(&ProviderCapability::MetricDimensionGroupBy) {
+                return Err(ProviderError::UnsupportedMetricCapability(
+                    "metric-dimension-group-by".into(),
+                ));
+            }
+            ensure_metric_field(rows, &dimension.field)?;
+        }
+        if let Some(time_bucket) = &query.time_bucket {
+            let required = time_bucket.grain.required_capability();
+            if !capabilities.contains(&required) {
+                return Err(ProviderError::UnsupportedMetricCapability(format!(
+                    "{required:?}"
+                )));
+            }
+            ensure_metric_field(rows, &time_bucket.field)?;
+        }
+
+        Ok(())
+    }
+
+    fn run_metric_query(
+        &self,
+        rows: Vec<MetricInputRow>,
+        query: ProviderMetricQuery,
+    ) -> Result<ProviderMetricResult, ProviderError> {
+        self.validate_metric_query(&rows, &query)?;
+        let filtered = rows
+            .into_iter()
+            .filter(|row| {
+                query
+                    .filters
+                    .iter()
+                    .all(|filter| filter_matches(row, filter))
+            })
+            .collect::<Vec<_>>();
+
+        let mut groups: BTreeMap<
+            String,
+            (
+                BTreeMap<String, ProviderMetricValue>,
+                Vec<MetricAccumulator>,
+            ),
+        > = BTreeMap::new();
+        for row in &filtered {
+            let dimensions = metric_dimensions(row, &query.dimensions, query.time_bucket.as_ref())?;
+            let key = dimensions
+                .iter()
+                .map(|(name, value)| format!("{name}={}", value.sort_key()))
+                .collect::<Vec<_>>()
+                .join("\u{1f}");
+            let entry = groups.entry(key).or_insert_with(|| {
+                (
+                    dimensions,
+                    query
+                        .aggregations
+                        .iter()
+                        .cloned()
+                        .map(MetricAccumulator::new)
+                        .collect(),
+                )
+            });
+            for accumulator in &mut entry.1 {
+                accumulator.record(row);
+            }
+        }
+
+        if groups.is_empty() && query.dimensions.is_empty() && query.time_bucket.is_none() {
+            let mut accumulators = query
+                .aggregations
+                .iter()
+                .cloned()
+                .map(MetricAccumulator::new)
+                .collect::<Vec<_>>();
+            for row in &filtered {
+                for accumulator in &mut accumulators {
+                    accumulator.record(row);
+                }
+            }
+            groups.insert(String::new(), (BTreeMap::new(), accumulators));
+        }
+
+        let mut rows = groups
+            .into_values()
+            .map(|(dimensions, accumulators)| {
+                let metrics = accumulators
+                    .iter()
+                    .map(|accumulator| {
+                        (accumulator.aggregation.alias.clone(), accumulator.finish())
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                ProviderMetricRow {
+                    dimensions,
+                    metrics,
+                }
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by_key(metric_row_sort_key);
+        if let Some(limit) = query.limit {
+            rows.truncate(limit);
+        }
+
+        Ok(ProviderMetricResult {
+            source: query.source,
+            rows,
+        })
+    }
+}
+
+fn value_object(value: &serde_json::Value) -> Option<BTreeMap<String, serde_json::Value>> {
+    value.as_object().map(|object| {
+        object
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    })
+}
+
+fn payload_object(payload: &str) -> Result<BTreeMap<String, serde_json::Value>, ProviderError> {
+    let value: serde_json::Value = serde_json::from_str(payload).map_err(|err| {
+        ProviderError::MetricExecutionFailed(format!("event payload is not valid JSON: {err}"))
+    })?;
+    value_object(&value).ok_or_else(|| {
+        ProviderError::MetricExecutionFailed("event payload is not a JSON object".into())
+    })
+}
+
+fn metric_fixture_rows(name: &str) -> Option<Vec<MetricInputRow>> {
+    if name != "commerce" {
+        return None;
+    }
+
+    let rows = [
+        serde_json::json!({"kind":"visitor","campaign_id":"spring","visitor_id":"visitor-1","occurred_at":"2026-05-01T08:00:00Z"}),
+        serde_json::json!({"kind":"visitor","campaign_id":"spring","visitor_id":"visitor-2","occurred_at":"2026-05-01T08:10:00Z"}),
+        serde_json::json!({"kind":"click","campaign_id":"spring","visitor_id":"visitor-1","amount":null,"occurred_at":"2026-05-01T09:00:00Z"}),
+        serde_json::json!({"kind":"click","campaign_id":"spring","visitor_id":"visitor-2","amount":null,"occurred_at":"2026-05-01T10:00:00Z"}),
+        serde_json::json!({"kind":"order","campaign_id":"spring","visitor_id":"visitor-1","amount":120.0,"occurred_at":"2026-05-02T11:00:00Z"}),
+        serde_json::json!({"kind":"payment","campaign_id":"spring","visitor_id":"visitor-1","amount":120.0,"occurred_at":"2026-05-02T12:00:00Z"}),
+        serde_json::json!({"kind":"cost","campaign_id":"spring","amount":25.0,"occurred_at":"2026-05-02T13:00:00Z"}),
+        serde_json::json!({"kind":"campaign","campaign_id":"spring","channel":"search","occurred_at":"2026-05-01T00:00:00Z"}),
+        serde_json::json!({"kind":"visitor","campaign_id":"fall","visitor_id":"visitor-3","occurred_at":"2026-06-04T08:00:00Z"}),
+        serde_json::json!({"kind":"order","campaign_id":"fall","visitor_id":"visitor-3","amount":80.0,"occurred_at":"2026-06-04T11:00:00Z"}),
+        serde_json::json!({"kind":"cost","campaign_id":"fall","amount":30.0,"occurred_at":"2026-06-04T13:00:00Z"}),
+        serde_json::json!({"kind":"campaign","campaign_id":"fall","channel":"email","occurred_at":"2026-06-01T00:00:00Z"}),
+    ];
+
+    Some(
+        rows.into_iter()
+            .enumerate()
+            .map(|(index, value)| MetricInputRow {
+                values: value_object(&value).expect("fixture rows are objects"),
+                stable_key: format!("fixture:commerce:{index:020}"),
+            })
+            .collect(),
+    )
+}
+
+fn ensure_metric_field(rows: &[MetricInputRow], field: &str) -> Result<(), ProviderError> {
+    if rows.iter().any(|row| row.values.contains_key(field)) {
+        Ok(())
+    } else {
+        Err(ProviderError::UnknownMetricField(field.into()))
+    }
+}
+
+fn validate_filter_shape(filter: &ProviderMetricFilter) -> Result<(), ProviderError> {
+    match filter.operator {
+        ProviderMetricFilterOperator::In | ProviderMetricFilterOperator::NotIn => {
+            if filter.values.is_empty() {
+                return Err(ProviderError::InvalidMetricFilter(format!(
+                    "{} requires values",
+                    filter.field
+                )));
+            }
+        }
+        ProviderMetricFilterOperator::Exists | ProviderMetricFilterOperator::NotExists => {}
+        _ => {
+            if filter.value.is_none() {
+                return Err(ProviderError::InvalidMetricFilter(format!(
+                    "{} requires value",
+                    filter.field
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn value_as_f64(value: &serde_json::Value) -> Option<f64> {
+    value.as_f64()
+}
+
+fn metric_json_sort_key(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "0:".into(),
+        serde_json::Value::Bool(value) => format!("1:{value}"),
+        serde_json::Value::Number(value) => format!("2:{value}"),
+        serde_json::Value::String(value) => format!("3:{value}"),
+        serde_json::Value::Array(values) => {
+            format!(
+                "4:{}",
+                values
+                    .iter()
+                    .map(metric_json_sort_key)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+        serde_json::Value::Object(values) => {
+            format!(
+                "5:{}",
+                values
+                    .iter()
+                    .map(|(key, value)| format!("{key}:{}", metric_json_sort_key(value)))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+    }
+}
+
+fn metric_value_from_json(value: Option<&serde_json::Value>) -> ProviderMetricValue {
+    match value {
+        None | Some(serde_json::Value::Null) => ProviderMetricValue::Null,
+        Some(serde_json::Value::Bool(value)) => ProviderMetricValue::Bool(*value),
+        Some(serde_json::Value::Number(value)) => value
+            .as_f64()
+            .map(ProviderMetricValue::Number)
+            .unwrap_or(ProviderMetricValue::Null),
+        Some(serde_json::Value::String(value)) => ProviderMetricValue::String(value.clone()),
+        Some(value) => ProviderMetricValue::String(value.to_string()),
+    }
+}
+
+fn compare_metric_values(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+) -> Option<std::cmp::Ordering> {
+    match (left.as_f64(), right.as_f64()) {
+        (Some(left), Some(right)) => left.partial_cmp(&right),
+        _ => match (left.as_str(), right.as_str()) {
+            (Some(left), Some(right)) => Some(left.cmp(right)),
+            _ => None,
+        },
+    }
+}
+
+fn filter_matches(row: &MetricInputRow, filter: &ProviderMetricFilter) -> bool {
+    let value = row.values.get(&filter.field);
+    match filter.operator {
+        ProviderMetricFilterOperator::Equals => value == filter.value.as_ref(),
+        ProviderMetricFilterOperator::NotEquals => value != filter.value.as_ref(),
+        ProviderMetricFilterOperator::In => {
+            value.is_some_and(|value| filter.values.contains(value))
+        }
+        ProviderMetricFilterOperator::NotIn => {
+            value.is_none_or(|value| !filter.values.contains(value))
+        }
+        ProviderMetricFilterOperator::Gt => value
+            .zip(filter.value.as_ref())
+            .and_then(|(left, right)| compare_metric_values(left, right))
+            .is_some_and(|ordering| ordering.is_gt()),
+        ProviderMetricFilterOperator::Gte => value
+            .zip(filter.value.as_ref())
+            .and_then(|(left, right)| compare_metric_values(left, right))
+            .is_some_and(|ordering| ordering.is_ge()),
+        ProviderMetricFilterOperator::Lt => value
+            .zip(filter.value.as_ref())
+            .and_then(|(left, right)| compare_metric_values(left, right))
+            .is_some_and(|ordering| ordering.is_lt()),
+        ProviderMetricFilterOperator::Lte => value
+            .zip(filter.value.as_ref())
+            .and_then(|(left, right)| compare_metric_values(left, right))
+            .is_some_and(|ordering| ordering.is_le()),
+        ProviderMetricFilterOperator::Exists => value.is_some_and(|value| !value.is_null()),
+        ProviderMetricFilterOperator::NotExists => value.is_none_or(|value| value.is_null()),
+    }
+}
+
+fn metric_dimensions(
+    row: &MetricInputRow,
+    dimensions: &[ProviderMetricDimension],
+    time_bucket: Option<&ProviderMetricTimeBucket>,
+) -> Result<BTreeMap<String, ProviderMetricValue>, ProviderError> {
+    let mut values = BTreeMap::new();
+    if let Some(time_bucket) = time_bucket {
+        let value = row
+            .values
+            .get(&time_bucket.field)
+            .ok_or_else(|| ProviderError::UnknownMetricField(time_bucket.field.clone()))?;
+        values.insert(
+            time_bucket
+                .alias
+                .clone()
+                .unwrap_or_else(|| time_bucket.field.clone()),
+            ProviderMetricValue::String(bucket_timestamp(value, time_bucket.grain)?),
+        );
+    }
+    for dimension in dimensions {
+        values.insert(
+            dimension
+                .alias
+                .clone()
+                .unwrap_or_else(|| dimension.field.clone()),
+            metric_value_from_json(row.values.get(&dimension.field)),
+        );
+    }
+    Ok(values)
+}
+
+fn bucket_timestamp(
+    value: &serde_json::Value,
+    grain: ProviderMetricTimeGrain,
+) -> Result<String, ProviderError> {
+    let timestamp = value.as_str().ok_or_else(|| {
+        ProviderError::InvalidMetricFilter("time bucket field must be a string timestamp".into())
+    })?;
+    let date = timestamp.get(0..10).ok_or_else(|| {
+        ProviderError::InvalidMetricFilter(format!("invalid timestamp {timestamp}"))
+    })?;
+    let year = timestamp.get(0..4).ok_or_else(|| {
+        ProviderError::InvalidMetricFilter(format!("invalid timestamp {timestamp}"))
+    })?;
+    let month = timestamp
+        .get(5..7)
+        .and_then(|month| month.parse::<u32>().ok())
+        .ok_or_else(|| {
+            ProviderError::InvalidMetricFilter(format!("invalid timestamp {timestamp}"))
+        })?;
+    let day = timestamp
+        .get(8..10)
+        .and_then(|day| day.parse::<u32>().ok())
+        .ok_or_else(|| {
+            ProviderError::InvalidMetricFilter(format!("invalid timestamp {timestamp}"))
+        })?;
+
+    match grain {
+        ProviderMetricTimeGrain::Hour => timestamp
+            .get(0..13)
+            .map(|hour| format!("{hour}:00:00Z"))
+            .ok_or_else(|| {
+                ProviderError::InvalidMetricFilter(format!("invalid timestamp {timestamp}"))
+            }),
+        ProviderMetricTimeGrain::Day => Ok(date.into()),
+        ProviderMetricTimeGrain::Week => {
+            let week = ((day_of_year(month, day)? - 1) / 7) + 1;
+            Ok(format!("{year}-W{week:02}"))
+        }
+        ProviderMetricTimeGrain::Month => timestamp.get(0..7).map(str::to_owned).ok_or_else(|| {
+            ProviderError::InvalidMetricFilter(format!("invalid timestamp {timestamp}"))
+        }),
+        ProviderMetricTimeGrain::Quarter => {
+            let quarter = ((month - 1) / 3) + 1;
+            Ok(format!("{year}-Q{quarter}"))
+        }
+        ProviderMetricTimeGrain::Year => Ok(year.into()),
+    }
+}
+
+fn day_of_year(month: u32, day: u32) -> Result<u32, ProviderError> {
+    let month_lengths = [31_u32, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if !(1..=12).contains(&month) {
+        return Err(ProviderError::InvalidMetricFilter(format!(
+            "invalid timestamp month {month}"
+        )));
+    }
+    let month_index = (month - 1) as usize;
+    if day == 0 || day > month_lengths[month_index] {
+        return Err(ProviderError::InvalidMetricFilter(format!(
+            "invalid timestamp day {day}"
+        )));
+    }
+    Ok(month_lengths[..month_index].iter().sum::<u32>() + day)
+}
+
+fn metric_row_sort_key(row: &ProviderMetricRow) -> String {
+    row.dimensions
+        .iter()
+        .map(|(name, value)| format!("{name}={}", value.sort_key()))
+        .collect::<Vec<_>>()
+        .join("\u{1f}")
 }
 
 impl ProviderMetadataSource for FoundationDbProvider {
     fn metadata(&self) -> ProviderMetadata {
+        let mut capabilities = vec![
+            ProviderCapability::EventAppend,
+            ProviderCapability::EventStreamRead,
+            ProviderCapability::CanonicalState,
+            ProviderCapability::CanonicalWrite,
+            ProviderCapability::ProjectionGet,
+            ProviderCapability::ProjectionPut,
+            ProviderCapability::ProjectionRebuild,
+            ProviderCapability::ProjectionCheckpoint,
+            ProviderCapability::EntityRead,
+            ProviderCapability::EntitySearch,
+            ProviderCapability::RelationshipRead,
+            ProviderCapability::RelationshipQuery,
+            ProviderCapability::PathFind,
+            ProviderCapability::EntityLink,
+            ProviderCapability::HealthCheck,
+            ProviderCapability::ConfigValidate,
+            ProviderCapability::PackMetadataEmit,
+        ];
+        capabilities.extend(Self::metric_capabilities());
+
         ProviderMetadata {
             provider_id: PROVIDER_ID.into(),
             display_name: "FoundationDB".into(),
@@ -347,25 +1009,7 @@ impl ProviderMetadataSource for FoundationDbProvider {
             version: PROVIDER_VERSION.into(),
             status: ProviderStatus::Experimental,
             is_mock: false,
-            capabilities: vec![
-                ProviderCapability::EventAppend,
-                ProviderCapability::EventStreamRead,
-                ProviderCapability::CanonicalState,
-                ProviderCapability::CanonicalWrite,
-                ProviderCapability::ProjectionGet,
-                ProviderCapability::ProjectionPut,
-                ProviderCapability::ProjectionRebuild,
-                ProviderCapability::ProjectionCheckpoint,
-                ProviderCapability::EntityRead,
-                ProviderCapability::EntitySearch,
-                ProviderCapability::RelationshipRead,
-                ProviderCapability::RelationshipQuery,
-                ProviderCapability::PathFind,
-                ProviderCapability::EntityLink,
-                ProviderCapability::HealthCheck,
-                ProviderCapability::ConfigValidate,
-                ProviderCapability::PackMetadataEmit,
-            ],
+            capabilities,
             compatibility: ContractCompatibility::new(
                 SORLA_PROVIDER_CONTRACT_VERSION,
                 "0.1",
@@ -406,6 +1050,16 @@ impl ProviderMetadataSource for FoundationDbProvider {
             provider_id: self.metadata().provider_id,
             artifact_ref: "file://generated/provider-foundationdb.gtpack".into(),
         }
+    }
+}
+
+impl MetricProvider for FoundationDbProvider {
+    fn query_metric(
+        &self,
+        query: ProviderMetricQuery,
+    ) -> Result<ProviderMetricResult, ProviderError> {
+        let rows = self.metric_rows_for_query(&query)?;
+        self.run_metric_query(rows, query)
     }
 }
 
@@ -1024,10 +1678,14 @@ mod tests {
         AppendEventRequest, CanonicalEntityRecord, CanonicalEntityStoreProvider,
         CanonicalWriteProvider, CanonicalWriteRequest, ConfigValidator, EntityLink,
         EntityLinkProvider, EntityLinkRequest, EntityRecord, EntityRef, EntitySearchQuery,
-        EntityStoreProvider, EventStoreProvider, OntologyGraphProvider, PathQuery,
+        EntityStoreProvider, EventStoreProvider, MetricProvider, OntologyGraphProvider, PathQuery,
         PersistProjectionRequest, ProjectionProvider, ProjectionRebuildRequest, ProviderCapability,
-        ProviderHealth, ProviderMetadataSource, RelationshipDirection, RelationshipInstance,
-        RelationshipQuery, RelationshipRef, SorEventRecord, SorNamespace,
+        ProviderError, ProviderHealth, ProviderMetadataSource, ProviderMetricAggregateFunction,
+        ProviderMetricAggregation, ProviderMetricDimension, ProviderMetricFilter,
+        ProviderMetricFilterOperator, ProviderMetricQuery, ProviderMetricSource,
+        ProviderMetricTimeBucket, ProviderMetricTimeGrain, ProviderMetricValue,
+        RelationshipDirection, RelationshipInstance, RelationshipQuery, RelationshipRef,
+        SorEventRecord, SorNamespace,
     };
 
     fn entity(entity_type: &str, entity_id: &str) -> EntityRef {
@@ -1105,6 +1763,10 @@ mod tests {
         assert!(metadata.supports(ProviderCapability::EntityRead));
         assert!(metadata.supports(ProviderCapability::RelationshipQuery));
         assert!(metadata.supports(ProviderCapability::PathFind));
+        assert!(metadata.supports(ProviderCapability::MetricAggregateCount));
+        assert!(metadata.supports(ProviderCapability::MetricAggregateDistinctCount));
+        assert!(metadata.supports(ProviderCapability::MetricDimensionGroupBy));
+        assert!(metadata.supports(ProviderCapability::MetricTimeBucketMonth));
         assert!(
             metadata
                 .ontology_capabilities
@@ -1130,6 +1792,26 @@ mod tests {
         let entry = catalog_entry();
 
         assert_eq!(manifest.provider_id, entry.provider_id);
+        assert!(
+            manifest
+                .capabilities
+                .contains(&ProviderCapability::MetricAggregateCount)
+        );
+        assert!(
+            manifest
+                .capabilities
+                .contains(&ProviderCapability::MetricTimeBucketMonth)
+        );
+        assert!(
+            entry
+                .capabilities
+                .contains(&ProviderCapability::MetricAggregateCount)
+        );
+        assert!(
+            entry
+                .capabilities
+                .contains(&ProviderCapability::MetricDimensionGroupBy)
+        );
         assert_eq!(manifest.provider_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(
             manifest.oci_reference.as_deref(),
@@ -1186,6 +1868,415 @@ mod tests {
             expected_revision: Some(0),
         });
         assert!(conflict.is_err());
+    }
+
+    #[test]
+    fn metric_query_executes_event_stream_aggregates_with_filters() {
+        let provider = FoundationDbProvider::for_tests();
+        for (index, payload) in [
+            serde_json::json!({"kind":"click","campaign_id":"spring","visitor_id":"visitor-1","amount":10.0,"occurred_at":"2026-05-01T09:00:00Z"}),
+            serde_json::json!({"kind":"click","campaign_id":"spring","visitor_id":"visitor-2","amount":20.0,"occurred_at":"2026-05-01T10:00:00Z"}),
+            serde_json::json!({"kind":"view","campaign_id":"fall","visitor_id":"visitor-2","amount":50.0,"occurred_at":"2026-05-02T10:00:00Z"}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            provider
+                .append_event(AppendEventRequest {
+                    stream_id: "commerce-events".into(),
+                    event_type: "commerce.event".into(),
+                    payload: payload.to_string(),
+                    expected_revision: Some(index as u64),
+                })
+                .expect("append should succeed");
+        }
+
+        let result = provider
+            .query_metric(ProviderMetricQuery {
+                source: ProviderMetricSource::EventStream {
+                    stream_id: "commerce-events".into(),
+                },
+                aggregations: vec![
+                    ProviderMetricAggregation {
+                        alias: "clicks".into(),
+                        function: ProviderMetricAggregateFunction::Count,
+                        field: None,
+                    },
+                    ProviderMetricAggregation {
+                        alias: "amount_sum".into(),
+                        function: ProviderMetricAggregateFunction::Sum,
+                        field: Some("amount".into()),
+                    },
+                    ProviderMetricAggregation {
+                        alias: "amount_avg".into(),
+                        function: ProviderMetricAggregateFunction::Avg,
+                        field: Some("amount".into()),
+                    },
+                    ProviderMetricAggregation {
+                        alias: "visitors".into(),
+                        function: ProviderMetricAggregateFunction::DistinctCount,
+                        field: Some("visitor_id".into()),
+                    },
+                ],
+                filters: vec![ProviderMetricFilter {
+                    field: "kind".into(),
+                    operator: ProviderMetricFilterOperator::Equals,
+                    value: Some(serde_json::json!("click")),
+                    values: vec![],
+                }],
+                dimensions: vec![],
+                time_bucket: None,
+                limit: None,
+            })
+            .expect("metric query should succeed");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].metrics.get("clicks"),
+            Some(&ProviderMetricValue::Number(2.0))
+        );
+        assert_eq!(
+            result.rows[0].metrics.get("amount_sum"),
+            Some(&ProviderMetricValue::Number(30.0))
+        );
+        assert_eq!(
+            result.rows[0].metrics.get("amount_avg"),
+            Some(&ProviderMetricValue::Number(15.0))
+        );
+        assert_eq!(
+            result.rows[0].metrics.get("visitors"),
+            Some(&ProviderMetricValue::Number(2.0))
+        );
+    }
+
+    #[test]
+    fn metric_query_groups_canonical_entities_by_dimension_and_month() {
+        let provider = FoundationDbProvider::for_tests();
+        for (entity_id, campaign_id, amount, updated_at) in [
+            ("order-001", "spring", 120.0, "2026-05-02T11:00:00Z"),
+            ("order-002", "spring", 80.0, "2026-05-03T11:00:00Z"),
+            ("order-003", "fall", 50.0, "2026-06-04T11:00:00Z"),
+        ] {
+            provider
+                .upsert_canonical_entity(CanonicalEntityRecord {
+                    namespace: namespace(),
+                    entity_type: "Order".into(),
+                    entity_id: entity_id.into(),
+                    canonical_version: "2026-05-22".into(),
+                    revision: 1,
+                    data_json: serde_json::json!({
+                        "campaign_id": campaign_id,
+                        "amount": amount,
+                    }),
+                    created_at: updated_at.into(),
+                    updated_at: updated_at.into(),
+                })
+                .expect("canonical upsert should succeed");
+        }
+
+        let result = provider
+            .query_metric(ProviderMetricQuery {
+                source: ProviderMetricSource::CanonicalEntities {
+                    namespace: namespace(),
+                    entity_type: "Order".into(),
+                },
+                aggregations: vec![ProviderMetricAggregation {
+                    alias: "revenue".into(),
+                    function: ProviderMetricAggregateFunction::Sum,
+                    field: Some("amount".into()),
+                }],
+                filters: vec![],
+                dimensions: vec![ProviderMetricDimension {
+                    field: "campaign_id".into(),
+                    alias: Some("campaign".into()),
+                }],
+                time_bucket: Some(ProviderMetricTimeBucket {
+                    field: "updated_at".into(),
+                    grain: ProviderMetricTimeGrain::Month,
+                    alias: Some("month".into()),
+                }),
+                limit: None,
+            })
+            .expect("metric query should succeed");
+
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(
+            result.rows[0].dimensions.get("campaign"),
+            Some(&ProviderMetricValue::String("fall".into()))
+        );
+        assert_eq!(
+            result.rows[0].dimensions.get("month"),
+            Some(&ProviderMetricValue::String("2026-06".into()))
+        );
+        assert_eq!(
+            result.rows[0].metrics.get("revenue"),
+            Some(&ProviderMetricValue::Number(50.0))
+        );
+        assert_eq!(
+            result.rows[1].dimensions.get("campaign"),
+            Some(&ProviderMetricValue::String("spring".into()))
+        );
+        assert_eq!(
+            result.rows[1].dimensions.get("month"),
+            Some(&ProviderMetricValue::String("2026-05".into()))
+        );
+        assert_eq!(
+            result.rows[1].metrics.get("revenue"),
+            Some(&ProviderMetricValue::Number(200.0))
+        );
+    }
+
+    #[test]
+    fn metric_query_buckets_fixture_rows_by_day() {
+        let provider = FoundationDbProvider::for_tests();
+        let result = provider
+            .query_metric(ProviderMetricQuery {
+                source: ProviderMetricSource::Fixture {
+                    name: "commerce".into(),
+                },
+                aggregations: vec![ProviderMetricAggregation {
+                    alias: "daily_clicks".into(),
+                    function: ProviderMetricAggregateFunction::Count,
+                    field: None,
+                }],
+                filters: vec![ProviderMetricFilter {
+                    field: "kind".into(),
+                    operator: ProviderMetricFilterOperator::Equals,
+                    value: Some(serde_json::json!("click")),
+                    values: vec![],
+                }],
+                dimensions: vec![],
+                time_bucket: Some(ProviderMetricTimeBucket {
+                    field: "occurred_at".into(),
+                    grain: ProviderMetricTimeGrain::Day,
+                    alias: Some("day".into()),
+                }),
+                limit: None,
+            })
+            .expect("fixture query should succeed");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].dimensions.get("day"),
+            Some(&ProviderMetricValue::String("2026-05-01".into()))
+        );
+        assert_eq!(
+            result.rows[0].metrics.get("daily_clicks"),
+            Some(&ProviderMetricValue::Number(2.0))
+        );
+    }
+
+    #[test]
+    fn metric_fixture_covers_commerce_dependency_inputs() {
+        let provider = FoundationDbProvider::for_tests();
+        let monthly_revenue = provider
+            .query_metric(ProviderMetricQuery {
+                source: ProviderMetricSource::Fixture {
+                    name: "commerce".into(),
+                },
+                aggregations: vec![ProviderMetricAggregation {
+                    alias: "monthly_revenue".into(),
+                    function: ProviderMetricAggregateFunction::Sum,
+                    field: Some("amount".into()),
+                }],
+                filters: vec![ProviderMetricFilter {
+                    field: "kind".into(),
+                    operator: ProviderMetricFilterOperator::Equals,
+                    value: Some(serde_json::json!("order")),
+                    values: vec![],
+                }],
+                dimensions: vec![],
+                time_bucket: Some(ProviderMetricTimeBucket {
+                    field: "occurred_at".into(),
+                    grain: ProviderMetricTimeGrain::Month,
+                    alias: Some("month".into()),
+                }),
+                limit: None,
+            })
+            .expect("monthly revenue should query");
+        assert_eq!(
+            monthly_revenue.rows[0].metrics.get("monthly_revenue"),
+            Some(&ProviderMetricValue::Number(120.0))
+        );
+        assert_eq!(
+            monthly_revenue.rows[1].metrics.get("monthly_revenue"),
+            Some(&ProviderMetricValue::Number(80.0))
+        );
+
+        let monthly_cost = provider
+            .query_metric(ProviderMetricQuery {
+                source: ProviderMetricSource::Fixture {
+                    name: "commerce".into(),
+                },
+                aggregations: vec![ProviderMetricAggregation {
+                    alias: "monthly_cost".into(),
+                    function: ProviderMetricAggregateFunction::Sum,
+                    field: Some("amount".into()),
+                }],
+                filters: vec![ProviderMetricFilter {
+                    field: "kind".into(),
+                    operator: ProviderMetricFilterOperator::Equals,
+                    value: Some(serde_json::json!("cost")),
+                    values: vec![],
+                }],
+                dimensions: vec![],
+                time_bucket: Some(ProviderMetricTimeBucket {
+                    field: "occurred_at".into(),
+                    grain: ProviderMetricTimeGrain::Month,
+                    alias: Some("month".into()),
+                }),
+                limit: None,
+            })
+            .expect("monthly cost should query");
+        assert_eq!(
+            monthly_cost.rows[0].metrics.get("monthly_cost"),
+            Some(&ProviderMetricValue::Number(25.0))
+        );
+        assert_eq!(
+            monthly_cost.rows[1].metrics.get("monthly_cost"),
+            Some(&ProviderMetricValue::Number(30.0))
+        );
+
+        let conversion_inputs = provider
+            .query_metric(ProviderMetricQuery {
+                source: ProviderMetricSource::Fixture {
+                    name: "commerce".into(),
+                },
+                aggregations: vec![
+                    ProviderMetricAggregation {
+                        alias: "orders".into(),
+                        function: ProviderMetricAggregateFunction::Count,
+                        field: None,
+                    },
+                    ProviderMetricAggregation {
+                        alias: "visitors".into(),
+                        function: ProviderMetricAggregateFunction::DistinctCount,
+                        field: Some("visitor_id".into()),
+                    },
+                ],
+                filters: vec![ProviderMetricFilter {
+                    field: "kind".into(),
+                    operator: ProviderMetricFilterOperator::In,
+                    value: None,
+                    values: vec![serde_json::json!("order"), serde_json::json!("visitor")],
+                }],
+                dimensions: vec![ProviderMetricDimension {
+                    field: "kind".into(),
+                    alias: Some("input".into()),
+                }],
+                time_bucket: None,
+                limit: None,
+            })
+            .expect("conversion inputs should query");
+        assert_eq!(conversion_inputs.rows.len(), 2);
+
+        let roas_inputs = provider
+            .query_metric(ProviderMetricQuery {
+                source: ProviderMetricSource::Fixture {
+                    name: "commerce".into(),
+                },
+                aggregations: vec![ProviderMetricAggregation {
+                    alias: "amount".into(),
+                    function: ProviderMetricAggregateFunction::Sum,
+                    field: Some("amount".into()),
+                }],
+                filters: vec![ProviderMetricFilter {
+                    field: "kind".into(),
+                    operator: ProviderMetricFilterOperator::In,
+                    value: None,
+                    values: vec![serde_json::json!("order"), serde_json::json!("cost")],
+                }],
+                dimensions: vec![
+                    ProviderMetricDimension {
+                        field: "campaign_id".into(),
+                        alias: Some("campaign".into()),
+                    },
+                    ProviderMetricDimension {
+                        field: "kind".into(),
+                        alias: Some("input".into()),
+                    },
+                ],
+                time_bucket: None,
+                limit: None,
+            })
+            .expect("roas inputs should query");
+        assert_eq!(roas_inputs.rows.len(), 4);
+        assert!(roas_inputs.rows.iter().any(|row| {
+            row.dimensions.get("campaign") == Some(&ProviderMetricValue::String("spring".into()))
+                && row.dimensions.get("input") == Some(&ProviderMetricValue::String("order".into()))
+                && row.metrics.get("amount") == Some(&ProviderMetricValue::Number(120.0))
+        }));
+        assert!(roas_inputs.rows.iter().any(|row| {
+            row.dimensions.get("campaign") == Some(&ProviderMetricValue::String("fall".into()))
+                && row.dimensions.get("input") == Some(&ProviderMetricValue::String("cost".into()))
+                && row.metrics.get("amount") == Some(&ProviderMetricValue::Number(30.0))
+        }));
+    }
+
+    #[test]
+    fn metric_query_returns_useful_errors() {
+        let provider = FoundationDbProvider::for_tests();
+        let unknown_source = provider.query_metric(ProviderMetricQuery {
+            source: ProviderMetricSource::EventStream {
+                stream_id: "missing".into(),
+            },
+            aggregations: vec![ProviderMetricAggregation {
+                alias: "count".into(),
+                function: ProviderMetricAggregateFunction::Count,
+                field: None,
+            }],
+            filters: vec![],
+            dimensions: vec![],
+            time_bucket: None,
+            limit: None,
+        });
+        assert!(matches!(
+            unknown_source,
+            Err(ProviderError::UnknownMetricSource(_))
+        ));
+
+        let unknown_field = provider.query_metric(ProviderMetricQuery {
+            source: ProviderMetricSource::Fixture {
+                name: "commerce".into(),
+            },
+            aggregations: vec![ProviderMetricAggregation {
+                alias: "bad".into(),
+                function: ProviderMetricAggregateFunction::Sum,
+                field: Some("missing_amount".into()),
+            }],
+            filters: vec![],
+            dimensions: vec![],
+            time_bucket: None,
+            limit: None,
+        });
+        assert!(matches!(
+            unknown_field,
+            Err(ProviderError::UnknownMetricField(field)) if field == "missing_amount"
+        ));
+
+        let invalid_filter = provider.query_metric(ProviderMetricQuery {
+            source: ProviderMetricSource::Fixture {
+                name: "commerce".into(),
+            },
+            aggregations: vec![ProviderMetricAggregation {
+                alias: "count".into(),
+                function: ProviderMetricAggregateFunction::Count,
+                field: None,
+            }],
+            filters: vec![ProviderMetricFilter {
+                field: "kind".into(),
+                operator: ProviderMetricFilterOperator::In,
+                value: None,
+                values: vec![],
+            }],
+            dimensions: vec![],
+            time_bucket: None,
+            limit: None,
+        });
+        assert!(matches!(
+            invalid_filter,
+            Err(ProviderError::InvalidMetricFilter(_))
+        ));
     }
 
     #[test]

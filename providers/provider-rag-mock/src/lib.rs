@@ -523,6 +523,7 @@ mod tests {
         let metadata = provider.metadata();
         assert!(metadata.supports(ProviderCapability::EvidenceQuery));
         assert!(metadata.supports(ProviderCapability::EvidenceResolve));
+        assert!(!metadata.supports(ProviderCapability::MetricAggregateCount));
     }
 
     #[test]
@@ -550,6 +551,16 @@ mod tests {
             "file://generated/provider-rag-mock.gtpack"
         );
         assert_eq!(manifest.runtime_components.len(), 1);
+        assert!(
+            !manifest
+                .capabilities
+                .contains(&ProviderCapability::MetricAggregateCount)
+        );
+        assert!(
+            !entry
+                .capabilities
+                .contains(&ProviderCapability::MetricAggregateCount)
+        );
     }
 
     #[test]

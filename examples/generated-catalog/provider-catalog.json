@@ -23,7 +23,20 @@
         "entity-link",
         "health-check",
         "config-validate",
-        "pack-metadata-emit"
+        "pack-metadata-emit",
+        "metric-aggregate-count",
+        "metric-aggregate-sum",
+        "metric-aggregate-avg",
+        "metric-aggregate-min",
+        "metric-aggregate-max",
+        "metric-aggregate-distinct-count",
+        "metric-dimension-group-by",
+        "metric-time-bucket-hour",
+        "metric-time-bucket-day",
+        "metric-time-bucket-week",
+        "metric-time-bucket-month",
+        "metric-time-bucket-quarter",
+        "metric-time-bucket-year"
       ],
       "tags": [
         "event-store",
