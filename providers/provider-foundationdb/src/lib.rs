@@ -1815,7 +1815,7 @@ mod tests {
         assert_eq!(manifest.provider_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(
             manifest.oci_reference.as_deref(),
-            Some("oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.4")
+            Some("oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.8")
         );
         assert_eq!(
             provider.pack_emission().artifact_ref,

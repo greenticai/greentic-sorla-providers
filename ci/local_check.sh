@@ -100,6 +100,13 @@ if [[ "$run_full" -eq 1 ]]; then
     print_step "ontology smoke"
     cargo xtask ontology-smoke
 
+    print_step "regenerate provider packs and catalog"
+    cargo run -p sorla-provider-pack-cli
+    cargo run -p sorla-provider-catalog-cli
+
+    print_step "generated provider version check"
+    cargo xtask generated-version-check
+
     print_step "cargo build"
     cargo build --all-features
 

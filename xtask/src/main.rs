@@ -52,6 +52,51 @@ struct ProviderMatrixEntry {
     depends_on: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct GeneratedPackIndexEntry {
+    provider_id: String,
+    provider_version: String,
+    provider_slug: String,
+    manifest_path: String,
+    artifact_path: String,
+    oci_reference: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeneratedCatalog {
+    entries: Vec<GeneratedCatalogEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeneratedCatalogEntry {
+    provider_id: String,
+    provider_version: String,
+    oci_reference: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeneratedManifest {
+    provider_id: String,
+    provider_version: String,
+    oci_reference: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeneratedPackArtifact {
+    manifest: GeneratedManifest,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoMetadata {
+    packages: Vec<CargoPackage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoPackage {
+    name: String,
+    version: String,
+}
+
 fn main() {
     if let Err(err) = run() {
         eprintln!("{err}");
@@ -62,13 +107,14 @@ fn main() {
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1).collect::<Vec<_>>();
     let command = args.first().cloned().ok_or_else(|| {
-        "usage: cargo xtask <provider-version|provider-matrix|ontology-smoke> ...".to_string()
+        "usage: cargo xtask <provider-version|provider-matrix|generated-version-check|ontology-smoke> ...".to_string()
     })?;
     args.remove(0);
 
     match command.as_str() {
         "provider-version" => provider_version(args),
         "provider-matrix" => provider_matrix(args),
+        "generated-version-check" => generated_version_check(),
         "ontology-smoke" => ontology_smoke(),
         _ => Err(format!("unknown xtask command: {command}")),
     }
@@ -448,6 +494,158 @@ fn provider_matrix(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+fn generated_version_check() -> Result<(), String> {
+    let map = read_provider_map()?;
+    let package_versions = cargo_package_versions()?;
+    let mut expected = BTreeMap::new();
+    for (provider, spec) in &map.providers {
+        let version = package_versions
+            .get(&spec.package)
+            .ok_or_else(|| format!("cargo metadata is missing package {}", spec.package))?;
+        expected.insert(provider.clone(), version.clone());
+    }
+
+    let index_entries: Vec<GeneratedPackIndexEntry> =
+        read_json("examples/generated-packs/index.json")?;
+    let catalog: GeneratedCatalog = read_json("examples/generated-catalog/provider-catalog.json")?;
+
+    for (provider, version) in &expected {
+        let provider_id = provider_id(provider);
+        let slug = provider_slug(provider);
+        let oci_reference = expected_provider_oci_reference(&slug, version);
+
+        let index_entry = index_entries
+            .iter()
+            .find(|entry| entry.provider_id == provider_id)
+            .ok_or_else(|| format!("generated pack index is missing {provider_id}"))?;
+        assert_generated_version(
+            "examples/generated-packs/index.json",
+            &provider_id,
+            &index_entry.provider_version,
+            version,
+        )?;
+        assert_generated_oci_reference(
+            "examples/generated-packs/index.json",
+            &provider_id,
+            index_entry.oci_reference.as_deref(),
+            &oci_reference,
+        )?;
+        if index_entry.provider_slug != slug {
+            return Err(format!(
+                "examples/generated-packs/index.json has slug {} for {}, expected {}",
+                index_entry.provider_slug, provider_id, slug
+            ));
+        }
+
+        let manifest: GeneratedManifest = read_json(&index_entry.manifest_path)?;
+        assert_generated_manifest(
+            &index_entry.manifest_path,
+            &manifest,
+            &provider_id,
+            version,
+            &oci_reference,
+        )?;
+
+        let artifact: GeneratedPackArtifact = read_json(&index_entry.artifact_path)?;
+        assert_generated_manifest(
+            &index_entry.artifact_path,
+            &artifact.manifest,
+            &provider_id,
+            version,
+            &oci_reference,
+        )?;
+
+        let catalog_entry = catalog
+            .entries
+            .iter()
+            .find(|entry| entry.provider_id == provider_id)
+            .ok_or_else(|| format!("provider-catalog.json is missing {provider_id}"))?;
+        assert_generated_version(
+            "examples/generated-catalog/provider-catalog.json",
+            &provider_id,
+            &catalog_entry.provider_version,
+            version,
+        )?;
+        assert_generated_oci_reference(
+            "examples/generated-catalog/provider-catalog.json",
+            &provider_id,
+            catalog_entry.oci_reference.as_deref(),
+            &oci_reference,
+        )?;
+    }
+
+    println!("generated provider versions match Cargo package versions");
+    Ok(())
+}
+
+fn provider_id(provider: &str) -> String {
+    format!("greentic.sorla.provider.{provider}")
+}
+
+fn provider_slug(provider: &str) -> String {
+    provider
+        .strip_prefix("provider-")
+        .unwrap_or(provider)
+        .to_string()
+}
+
+fn expected_provider_oci_reference(provider: &str, version: &str) -> String {
+    format!("oci://ghcr.io/greenticai/sorla-providers/{provider}:{version}")
+}
+
+fn assert_generated_manifest(
+    path: &str,
+    manifest: &GeneratedManifest,
+    provider_id: &str,
+    version: &str,
+    oci_reference: &str,
+) -> Result<(), String> {
+    if manifest.provider_id != provider_id {
+        return Err(format!(
+            "{path} has provider_id {}, expected {provider_id}",
+            manifest.provider_id
+        ));
+    }
+    assert_generated_version(path, provider_id, &manifest.provider_version, version)?;
+    assert_generated_oci_reference(
+        path,
+        provider_id,
+        manifest.oci_reference.as_deref(),
+        oci_reference,
+    )
+}
+
+fn assert_generated_version(
+    path: &str,
+    provider_id: &str,
+    actual: &str,
+    expected: &str,
+) -> Result<(), String> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "{path} has {provider_id} provider_version {actual}, expected Cargo package version {expected}"
+        ))
+    }
+}
+
+fn assert_generated_oci_reference(
+    path: &str,
+    provider_id: &str,
+    actual: Option<&str>,
+    expected: &str,
+) -> Result<(), String> {
+    if actual == Some(expected) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{path} has {provider_id} oci_reference {:?}, expected {expected}",
+            actual
+        ))
+    }
+}
+
 fn set_provider_version(provider: &str, version: Version) -> Result<(), String> {
     let map = read_provider_map()?;
     let key = canonical_provider_key(&map, provider)?;
@@ -466,6 +664,31 @@ fn read_provider_map() -> Result<ProviderMap, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read {PROVIDER_MAP_PATH}: {err}"))?;
     serde_json::from_str(&raw).map_err(|err| format!("invalid {PROVIDER_MAP_PATH}: {err}"))
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: impl AsRef<Path>) -> Result<T, String> {
+    let path = workspace_path(path);
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|err| format!("invalid JSON in {}: {err}", path.display()))
+}
+
+fn cargo_package_versions() -> Result<BTreeMap<String, String>, String> {
+    let output = Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .output()
+        .map_err(|err| format!("failed to run cargo metadata: {err}"))?;
+    if !output.status.success() {
+        return Err(format!("cargo metadata failed with {}", output.status));
+    }
+
+    let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)
+        .map_err(|err| format!("failed to parse cargo metadata: {err}"))?;
+    Ok(metadata
+        .packages
+        .into_iter()
+        .map(|package| (package.name, package.version))
+        .collect())
 }
 
 fn workspace_path(path: impl AsRef<Path>) -> PathBuf {
@@ -932,6 +1155,20 @@ serde = "1"
         .unwrap();
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn generated_version_check_reports_stale_versions() {
+        let err = assert_generated_version(
+            "examples/generated-catalog/provider-catalog.json",
+            "greentic.sorla.provider.foundationdb",
+            "0.1.4",
+            "0.1.7",
+        )
+        .unwrap_err();
+
+        assert!(err.contains("provider_version 0.1.4"));
+        assert!(err.contains("expected Cargo package version 0.1.7"));
     }
 
     #[test]

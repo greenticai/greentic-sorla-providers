@@ -166,7 +166,7 @@ Provider releases publish generated artifacts in two places:
 Exact semantic-version tags are the reliable reference mechanism for bundles and toolchain manifests:
 
 ```text
-oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.4
+oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.8
 oci://ghcr.io/greenticai/sorla-providers/sharepoint-mock:0.1.4
 oci://ghcr.io/greenticai/sorla-providers/rag-mock:0.1.4
 ```
