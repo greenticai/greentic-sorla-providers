@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use semver::VersionReq;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -12,6 +14,16 @@ pub enum ProviderError {
     Unsupported(&'static str),
     #[error("not implemented: {0}")]
     NotImplemented(&'static str),
+    #[error("metric capability not supported: {0}")]
+    UnsupportedMetricCapability(String),
+    #[error("unknown metric source: {0}")]
+    UnknownMetricSource(String),
+    #[error("unknown metric field: {0}")]
+    UnknownMetricField(String),
+    #[error("invalid metric filter: {0}")]
+    InvalidMetricFilter(String),
+    #[error("metric execution failed: {0}")]
+    MetricExecutionFailed(String),
 }
 
 /// Stable SoRLa provider capability list for lock-phase contracts.
@@ -48,6 +60,21 @@ pub enum ProviderCapability {
     PolicyContextResolve,
     TextSearchProjection,
     VectorSearchProjection,
+    MetricAggregateCount,
+    MetricAggregateSum,
+    MetricAggregateAvg,
+    MetricAggregateMin,
+    MetricAggregateMax,
+    MetricAggregateDistinctCount,
+    MetricDimensionGroupBy,
+    MetricTimeBucketHour,
+    MetricTimeBucketDay,
+    MetricTimeBucketWeek,
+    MetricTimeBucketMonth,
+    MetricTimeBucketQuarter,
+    MetricTimeBucketYear,
+    MetricWindowRolling,
+    MetricFormulaBasic,
 }
 
 /// Lifecycle status for a provider implementation.
@@ -498,6 +525,191 @@ pub struct EvidenceItem {
     pub linked_entities: Vec<EntityLink>,
     pub relationship_context: Vec<RelationshipRef>,
     pub permissions_context_json: Option<String>,
+}
+
+/// Provider-neutral metric source references.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ProviderMetricSource {
+    /// Aggregate records from one named event stream.
+    EventStream { stream_id: String },
+    /// Aggregate canonical entity records by namespace and entity type.
+    CanonicalEntities {
+        namespace: SorNamespace,
+        entity_type: String,
+    },
+    /// Aggregate deterministic local/dev fixture data.
+    Fixture { name: String },
+}
+
+impl ProviderMetricSource {
+    pub fn description(&self) -> String {
+        match self {
+            Self::EventStream { stream_id } => format!("event stream {stream_id}"),
+            Self::CanonicalEntities {
+                namespace,
+                entity_type,
+            } => format!(
+                "canonical entities {entity_type} in {}",
+                namespace.to_entity_namespace()
+            ),
+            Self::Fixture { name } => format!("fixture {name}"),
+        }
+    }
+}
+
+/// Aggregate functions a metric provider may execute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderMetricAggregateFunction {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+    DistinctCount,
+}
+
+impl ProviderMetricAggregateFunction {
+    pub fn required_capability(self) -> ProviderCapability {
+        match self {
+            Self::Count => ProviderCapability::MetricAggregateCount,
+            Self::Sum => ProviderCapability::MetricAggregateSum,
+            Self::Avg => ProviderCapability::MetricAggregateAvg,
+            Self::Min => ProviderCapability::MetricAggregateMin,
+            Self::Max => ProviderCapability::MetricAggregateMax,
+            Self::DistinctCount => ProviderCapability::MetricAggregateDistinctCount,
+        }
+    }
+}
+
+/// One aggregate requested by a metric query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderMetricAggregation {
+    pub alias: String,
+    pub function: ProviderMetricAggregateFunction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+}
+
+/// Filter operators supported by the provider-neutral metric contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderMetricFilterOperator {
+    Equals,
+    NotEquals,
+    In,
+    NotIn,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+    Exists,
+    NotExists,
+}
+
+/// One predicate applied before metric aggregation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderMetricFilter {
+    pub field: String,
+    pub operator: ProviderMetricFilterOperator,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<Value>,
+}
+
+/// Time grain for bucketed metric output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderMetricTimeGrain {
+    Hour,
+    Day,
+    Week,
+    Month,
+    Quarter,
+    Year,
+}
+
+impl ProviderMetricTimeGrain {
+    pub fn required_capability(self) -> ProviderCapability {
+        match self {
+            Self::Hour => ProviderCapability::MetricTimeBucketHour,
+            Self::Day => ProviderCapability::MetricTimeBucketDay,
+            Self::Week => ProviderCapability::MetricTimeBucketWeek,
+            Self::Month => ProviderCapability::MetricTimeBucketMonth,
+            Self::Quarter => ProviderCapability::MetricTimeBucketQuarter,
+            Self::Year => ProviderCapability::MetricTimeBucketYear,
+        }
+    }
+}
+
+/// Time bucket specification for grouped metric output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderMetricTimeBucket {
+    pub field: String,
+    pub grain: ProviderMetricTimeGrain,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+/// Dimension specification for grouped metric output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderMetricDimension {
+    pub field: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+/// Query executed by a metric-capable provider.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderMetricQuery {
+    pub source: ProviderMetricSource,
+    pub aggregations: Vec<ProviderMetricAggregation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<ProviderMetricFilter>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dimensions: Vec<ProviderMetricDimension>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_bucket: Option<ProviderMetricTimeBucket>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+/// Primitive values returned in metric dimensions and aggregate cells.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "kebab-case")]
+pub enum ProviderMetricValue {
+    Null,
+    String(String),
+    Number(f64),
+    Bool(bool),
+}
+
+impl ProviderMetricValue {
+    pub fn sort_key(&self) -> String {
+        match self {
+            Self::Null => "0:".into(),
+            Self::Bool(value) => format!("1:{value}"),
+            Self::Number(value) => format!("2:{value:020.8}"),
+            Self::String(value) => format!("3:{value}"),
+        }
+    }
+}
+
+/// One grouped metric result row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderMetricRow {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dimensions: BTreeMap<String, ProviderMetricValue>,
+    pub metrics: BTreeMap<String, ProviderMetricValue>,
+}
+
+/// Complete metric query result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderMetricResult {
+    pub source: ProviderMetricSource,
+    pub rows: Vec<ProviderMetricRow>,
 }
 
 /// Link from provider content or source refs to a generic ontology entity.

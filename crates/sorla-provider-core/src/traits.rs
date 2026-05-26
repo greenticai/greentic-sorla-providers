@@ -4,7 +4,8 @@ use crate::types::{
     EventStreamRequest, EvidenceItem, EvidenceQuery, ExternalReferencePayload,
     ExternalReferenceRequest, HealthReport, OntologyPath, PackEmission, PathQuery,
     PersistProjectionRequest, ProjectionCheckpoint, ProjectionRebuildRequest, ProjectionRecord,
-    ProviderError, ProviderMetadata, RelationshipInstance, RelationshipQuery, SorNamespace,
+    ProviderError, ProviderMetadata, ProviderMetricQuery, ProviderMetricResult,
+    RelationshipInstance, RelationshipQuery, SorNamespace,
 };
 
 /// Exposes stable provider identity and capability metadata.
@@ -60,6 +61,14 @@ pub trait ExternalReferenceProvider {
 /// Evidence query and evidence lookup capabilities.
 pub trait EvidenceProvider {
     fn query_evidence(&self, query: EvidenceQuery) -> Result<Vec<EvidenceItem>, ProviderError>;
+}
+
+/// Metric query execution capabilities.
+pub trait MetricProvider {
+    fn query_metric(
+        &self,
+        query: ProviderMetricQuery,
+    ) -> Result<ProviderMetricResult, ProviderError>;
 }
 
 /// Generic ontology entity storage capabilities.

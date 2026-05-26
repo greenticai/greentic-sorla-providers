@@ -4,7 +4,7 @@
   "entries": [
     {
       "provider_id": "greentic.sorla.provider.foundationdb",
-      "provider_version": "0.1.4",
+      "provider_version": "0.1.8",
       "provider_kind": "event-store",
       "capabilities": [
         "event-append",
@@ -23,7 +23,20 @@
         "entity-link",
         "health-check",
         "config-validate",
-        "pack-metadata-emit"
+        "pack-metadata-emit",
+        "metric-aggregate-count",
+        "metric-aggregate-sum",
+        "metric-aggregate-avg",
+        "metric-aggregate-min",
+        "metric-aggregate-max",
+        "metric-aggregate-distinct-count",
+        "metric-dimension-group-by",
+        "metric-time-bucket-hour",
+        "metric-time-bucket-day",
+        "metric-time-bucket-week",
+        "metric-time-bucket-month",
+        "metric-time-bucket-quarter",
+        "metric-time-bucket-year"
       ],
       "tags": [
         "event-store",
@@ -36,7 +49,7 @@
       "supported_sorla_ir_range": ">=0.1, <0.2",
       "config_schema_path": "schemas/provider-config.schema.json",
       "artifact_uri": "./greentic-sorla-provider-foundationdb.gtpack.json",
-      "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.4",
+      "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.8",
       "sdk_binding": {
         "crate_name": "provider_foundationdb",
         "package_name": "provider-foundationdb",
