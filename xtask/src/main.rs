@@ -378,10 +378,14 @@ fn provider_version(args: Vec<String>) -> Result<(), String> {
     match subcommand.as_str() {
         "list" => {
             let map = read_provider_map()?;
+            let package_versions = cargo_package_versions()?;
             for (provider, spec) in map.providers {
                 println!(
                     "{provider}\t{}",
-                    read_manifest_version(&spec.manifest_path)?
+                    package_versions.get(&spec.package).ok_or_else(|| format!(
+                        "cargo metadata is missing package {}",
+                        spec.package
+                    ))?
                 );
             }
             Ok(())
@@ -461,6 +465,7 @@ fn provider_matrix(args: Vec<String>) -> Result<(), String> {
     }
 
     let map = read_provider_map()?;
+    let package_versions = cargo_package_versions()?;
     let selected = if provider == "all" {
         match changed_files {
             Some(path) => detect_changed_providers(&map, &read_lines(&path)?),
@@ -481,7 +486,10 @@ fn provider_matrix(args: Vec<String>) -> Result<(), String> {
             provider,
             package: spec.package.clone(),
             manifest_path: spec.manifest_path.clone(),
-            version: read_manifest_version(&spec.manifest_path)?,
+            version: package_versions
+                .get(&spec.package)
+                .ok_or_else(|| format!("cargo metadata is missing package {}", spec.package))?
+                .clone(),
             depends_on: spec.depends_on.clone(),
         });
     }
@@ -1138,6 +1146,11 @@ serde = "1"
             "patch".into(),
         ])
         .unwrap();
+    }
+
+    #[test]
+    fn provider_matrix_command_accepts_all_with_workspace_versions() {
+        provider_matrix(vec!["--provider".into(), "all".into()]).unwrap();
     }
 
     #[test]
