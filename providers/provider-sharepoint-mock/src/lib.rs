@@ -697,6 +697,7 @@ mod tests {
         assert!(metadata.supports(ProviderCapability::ExternalReferenceResolve));
         assert!(metadata.supports(ProviderCapability::ExternalMappingValidate));
         assert!(metadata.supports(ProviderCapability::EntityLink));
+        assert!(!metadata.supports(ProviderCapability::MetricAggregateCount));
         assert!(metadata.is_mock);
     }
 
@@ -727,6 +728,16 @@ mod tests {
         assert_eq!(manifest.runtime_components.len(), 1);
         assert!(manifest.ontology_capabilities.is_some());
         assert!(entry.ontology.is_some());
+        assert!(
+            !manifest
+                .capabilities
+                .contains(&ProviderCapability::MetricAggregateCount)
+        );
+        assert!(
+            !entry
+                .capabilities
+                .contains(&ProviderCapability::MetricAggregateCount)
+        );
     }
 
     #[test]

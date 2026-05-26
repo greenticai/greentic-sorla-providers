@@ -6,8 +6,8 @@ mod types;
 pub use traits::{
     CanonicalEntityStoreProvider, CanonicalWriteProvider, ConfigValidator, EntityLinkProvider,
     EntityStoreProvider, EventStoreProvider, EvidenceProvider, ExternalMappingProvider,
-    ExternalReferenceProvider, OntologyGraphProvider, ProjectionProvider, ProviderHealth,
-    ProviderMetadataSource,
+    ExternalReferenceProvider, MetricProvider, OntologyGraphProvider, ProjectionProvider,
+    ProviderHealth, ProviderMetadataSource,
 };
 pub use types::{
     AppendEventRequest, CanonicalEntityRecord, CanonicalWriteRequest, CanonicalWriteResult,
@@ -18,7 +18,10 @@ pub use types::{
     PackEmission, PathQuery, PersistProjectionRequest, PolicyContext, PolicyContextRequest,
     ProjectionCheckpoint, ProjectionRebuildRequest, ProjectionRecord, ProjectionSupport,
     ProviderCapability, ProviderError, ProviderIndexCapabilities, ProviderMetadata,
-    ProviderOntologyCapabilities, ProviderSearchCapabilities, ProviderStatus,
+    ProviderMetricAggregateFunction, ProviderMetricAggregation, ProviderMetricDimension,
+    ProviderMetricFilter, ProviderMetricFilterOperator, ProviderMetricQuery, ProviderMetricResult,
+    ProviderMetricRow, ProviderMetricSource, ProviderMetricTimeBucket, ProviderMetricTimeGrain,
+    ProviderMetricValue, ProviderOntologyCapabilities, ProviderSearchCapabilities, ProviderStatus,
     RelationshipDirection, RelationshipInstance, RelationshipQuery, RelationshipRef,
     RelationshipTraversalRule, SorEventRecord, SorNamespace, TimeRange,
 };
@@ -32,9 +35,14 @@ mod tests {
         CanonicalEntityRecord, ContractCompatibility, EntityLink, EntityLinkRequest, EntityRef,
         EvidenceQueryFilter, ExternalReferenceRequest, OntologyContractCompatibility,
         OntologyScope, PathQuery, ProjectionSupport, ProviderCapability, ProviderIndexCapabilities,
-        ProviderMetadata, ProviderSearchCapabilities, ProviderStatus, RelationshipDirection,
+        ProviderMetadata, ProviderMetricAggregateFunction, ProviderMetricAggregation,
+        ProviderMetricDimension, ProviderMetricFilter, ProviderMetricFilterOperator,
+        ProviderMetricQuery, ProviderMetricResult, ProviderMetricRow, ProviderMetricSource,
+        ProviderMetricTimeBucket, ProviderMetricTimeGrain, ProviderMetricValue,
+        ProviderSearchCapabilities, ProviderStatus, RelationshipDirection,
         RelationshipTraversalRule, SORLA_PROVIDER_CONTRACT_VERSION, SorEventRecord, SorNamespace,
     };
+    use std::collections::BTreeMap;
 
     fn sample_metadata() -> ProviderMetadata {
         ProviderMetadata {
@@ -274,6 +282,114 @@ mod tests {
             serde_json::to_string(&ProviderCapability::TextSearchProjection)
                 .expect("capability should serialize"),
             "\"text-search-projection\""
+        );
+    }
+
+    #[test]
+    fn metric_capabilities_have_kebab_case_names() {
+        assert_eq!(
+            serde_json::to_string(&ProviderCapability::MetricAggregateDistinctCount)
+                .expect("capability should serialize"),
+            "\"metric-aggregate-distinct-count\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ProviderCapability::MetricDimensionGroupBy)
+                .expect("capability should serialize"),
+            "\"metric-dimension-group-by\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ProviderCapability::MetricTimeBucketMonth)
+                .expect("capability should serialize"),
+            "\"metric-time-bucket-month\""
+        );
+    }
+
+    #[test]
+    fn metric_query_round_trips_with_generic_source_and_filters() {
+        let query = ProviderMetricQuery {
+            source: ProviderMetricSource::CanonicalEntities {
+                namespace: SorNamespace {
+                    tenant_id: "tenant-a".into(),
+                    sor_id: "commerce".into(),
+                    environment_id: Some("dev".into()),
+                },
+                entity_type: "Order".into(),
+            },
+            aggregations: vec![
+                ProviderMetricAggregation {
+                    alias: "order_count".into(),
+                    function: ProviderMetricAggregateFunction::Count,
+                    field: None,
+                },
+                ProviderMetricAggregation {
+                    alias: "revenue".into(),
+                    function: ProviderMetricAggregateFunction::Sum,
+                    field: Some("amount".into()),
+                },
+            ],
+            filters: vec![ProviderMetricFilter {
+                field: "status".into(),
+                operator: ProviderMetricFilterOperator::Equals,
+                value: Some(serde_json::json!("paid")),
+                values: vec![],
+            }],
+            dimensions: vec![ProviderMetricDimension {
+                field: "campaign_id".into(),
+                alias: Some("campaign".into()),
+            }],
+            time_bucket: Some(ProviderMetricTimeBucket {
+                field: "created_at".into(),
+                grain: ProviderMetricTimeGrain::Month,
+                alias: Some("month".into()),
+            }),
+            limit: Some(100),
+        };
+
+        let json = serde_json::to_string(&query).expect("metric query should serialize");
+        let parsed: ProviderMetricQuery =
+            serde_json::from_str(&json).expect("metric query should deserialize");
+
+        assert_eq!(parsed, query);
+        assert!(json.contains("\"kind\":\"canonical-entities\""));
+        assert!(json.contains("\"function\":\"sum\""));
+        assert!(json.contains("\"operator\":\"equals\""));
+        assert!(!json.contains("daily_clicks"));
+    }
+
+    #[test]
+    fn metric_result_has_stable_row_shape() {
+        let mut dimensions = BTreeMap::new();
+        dimensions.insert(
+            "month".into(),
+            ProviderMetricValue::String("2026-05".into()),
+        );
+        dimensions.insert(
+            "campaign".into(),
+            ProviderMetricValue::String("campaign-a".into()),
+        );
+
+        let mut metrics = BTreeMap::new();
+        metrics.insert("order_count".into(), ProviderMetricValue::Number(3.0));
+        metrics.insert("revenue".into(), ProviderMetricValue::Number(120.5));
+
+        let result = ProviderMetricResult {
+            source: ProviderMetricSource::Fixture {
+                name: "commerce".into(),
+            },
+            rows: vec![ProviderMetricRow {
+                dimensions,
+                metrics,
+            }],
+        };
+
+        let json = serde_json::to_string(&result).expect("metric result should serialize");
+        let parsed: ProviderMetricResult =
+            serde_json::from_str(&json).expect("metric result should deserialize");
+
+        assert_eq!(parsed, result);
+        assert_eq!(
+            json,
+            r#"{"source":{"kind":"fixture","name":"commerce"},"rows":[{"dimensions":{"campaign":{"type":"string","value":"campaign-a"},"month":{"type":"string","value":"2026-05"}},"metrics":{"order_count":{"type":"number","value":3.0},"revenue":{"type":"number","value":120.5}}}]}"#
         );
     }
 
