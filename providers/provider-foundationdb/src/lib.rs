@@ -30,6 +30,13 @@ use sorla_provider_pack::{
 const PROVIDER_ID: &str = "greentic.sorla.provider.foundationdb";
 const PROVIDER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Returns `true` only in builds compiled with the real FoundationDB backend.
+/// Used by gated tests to assert the feature wiring is reachable.
+#[cfg(feature = "foundationdb-real")]
+pub fn fdb_real_backend_available() -> bool {
+    true
+}
+
 pub fn encode_key_segment(input: &str) -> String {
     let mut encoded = String::new();
     for byte in input.bytes() {
