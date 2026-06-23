@@ -1,4 +1,14 @@
-#![forbid(unsafe_code)]
+#![cfg_attr(not(feature = "foundationdb-real"), forbid(unsafe_code))]
+#![cfg_attr(feature = "foundationdb-real", deny(unsafe_code))]
+
+#[allow(dead_code)]
+mod fdb;
+
+#[cfg(feature = "foundationdb-real")]
+pub use fdb::runtime::{FdbRuntime, boot_network, connect};
+
+#[cfg(feature = "foundationdb-real")]
+pub use fdb::txn::{apply_canonical_write_fdb, read_event_stream_fdb};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
@@ -29,6 +39,13 @@ use sorla_provider_pack::{
 
 const PROVIDER_ID: &str = "greentic.sorla.provider.foundationdb";
 const PROVIDER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Returns `true` only in builds compiled with the real FoundationDB backend.
+/// Used by gated tests to assert the feature wiring is reachable.
+#[cfg(feature = "foundationdb-real")]
+pub fn fdb_real_backend_available() -> bool {
+    true
+}
 
 pub fn encode_key_segment(input: &str) -> String {
     let mut encoded = String::new();
@@ -228,28 +245,52 @@ impl InMemoryFoundationDb {
     }
 }
 
+enum Backend {
+    Memory(Arc<RwLock<InMemoryFoundationDb>>),
+    #[cfg(feature = "foundationdb-real")]
+    Fdb(crate::fdb::runtime::FdbRuntime),
+}
+
 /// Local/dev FoundationDB provider implementation with transactional in-memory backing.
 ///
 /// This keeps the SoRLa event/projection semantics real and testable while avoiding a hard
 /// external FoundationDB runtime dependency in the current repo phase.
 pub struct FoundationDbProvider {
     config: FoundationDbConfig,
-    state: Arc<RwLock<InMemoryFoundationDb>>,
+    backend: Backend,
 }
 
 impl FoundationDbProvider {
     pub fn new(config: FoundationDbConfig) -> Self {
+        #[cfg(feature = "foundationdb-real")]
+        {
+            let cluster = if config.cluster_file.is_empty() {
+                None
+            } else {
+                Some(config.cluster_file.as_str())
+            };
+            if let Ok(rt) = crate::fdb::runtime::connect(cluster) {
+                return Self {
+                    config,
+                    backend: Backend::Fdb(rt),
+                };
+            }
+            // connection failed -> fall back to in-memory so metadata/validate still work; surface via health()
+        }
         Self {
             config,
-            state: Arc::new(RwLock::new(InMemoryFoundationDb::default())),
+            backend: Backend::Memory(Arc::new(RwLock::new(InMemoryFoundationDb::default()))),
         }
     }
 
     pub fn for_tests() -> Self {
-        Self::new(FoundationDbConfig {
-            cluster_file: "/tmp/fdb.cluster".into(),
-            tenant_prefix: "tenant/test".into(),
-        })
+        Self {
+            config: FoundationDbConfig {
+                cluster_file: "/tmp/fdb.cluster".into(),
+                tenant_prefix: "tenant/test".into(),
+            },
+            backend: Backend::Memory(Arc::new(RwLock::new(InMemoryFoundationDb::default()))),
+        }
     }
 
     pub fn keyspace_layout(&self) -> KeyspaceLayout {
@@ -384,47 +425,64 @@ impl FoundationDbProvider {
         &self,
         relationship: RelationshipInstance,
     ) -> Result<RelationshipInstance, ProviderError> {
-        let mut state = self
-            .state
-            .write()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
-
-        Self::upsert_relationship_in_state(&mut state, relationship.clone());
-
-        Ok(relationship)
+        match &self.backend {
+            Backend::Memory(state) => {
+                let mut state = state
+                    .write()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+                Self::upsert_relationship_in_state(&mut state, relationship.clone());
+                Ok(relationship)
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(_rt) => Err(ProviderError::Validation(
+                "upsert_relationship is not yet supported on the FoundationDB backend".into(),
+            )),
+        }
     }
 
     pub fn upsert_evidence_link(&self, link: EntityLink) -> Result<EntityLink, ProviderError> {
-        let mut state = self
-            .state
-            .write()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
-
-        Self::upsert_evidence_link_in_state(&mut state, link.clone());
-
-        Ok(link)
+        match &self.backend {
+            Backend::Memory(state) => {
+                let mut state = state
+                    .write()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+                Self::upsert_evidence_link_in_state(&mut state, link.clone());
+                Ok(link)
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(_rt) => Err(ProviderError::Validation(
+                "upsert_evidence_link is not yet supported on the FoundationDB backend".into(),
+            )),
+        }
     }
 
     pub fn evidence_links_for_entity(
         &self,
         entity: &EntityRef,
     ) -> Result<Vec<EntityLink>, ProviderError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
-        let mut links = state
-            .evidence_links
-            .get(&Self::entity_key(entity))
-            .cloned()
-            .unwrap_or_default();
-        links.sort_by(|left, right| {
-            left.source_ref
-                .cmp(&right.source_ref)
-                .then_with(|| left.evidence_id.cmp(&right.evidence_id))
-                .then_with(|| left.match_kind.cmp(&right.match_kind))
-        });
-        Ok(links)
+        match &self.backend {
+            Backend::Memory(state) => {
+                let state = state
+                    .read()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+                let mut links = state
+                    .evidence_links
+                    .get(&Self::entity_key(entity))
+                    .cloned()
+                    .unwrap_or_default();
+                links.sort_by(|left, right| {
+                    left.source_ref
+                        .cmp(&right.source_ref)
+                        .then_with(|| left.evidence_id.cmp(&right.evidence_id))
+                        .then_with(|| left.match_kind.cmp(&right.match_kind))
+                });
+                Ok(links)
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(_rt) => Err(ProviderError::Validation(
+                "evidence_links_for_entity is not yet supported on the FoundationDB backend".into(),
+            )),
+        }
     }
 
     pub fn projection_checkpoint(
@@ -432,18 +490,42 @@ impl FoundationDbProvider {
         projection_name: &str,
         projection_key: &str,
     ) -> Result<Option<ProjectionCheckpoint>, ProviderError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
-        Ok(state
-            .projections
-            .get(&(projection_name.into(), projection_key.into()))
-            .map(|stored| stored.checkpoint.clone()))
+        match &self.backend {
+            Backend::Memory(state) => {
+                let state = state
+                    .read()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+                Ok(state
+                    .projections
+                    .get(&(projection_name.into(), projection_key.into()))
+                    .map(|stored| stored.checkpoint.clone()))
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(_rt) => Err(ProviderError::Validation(
+                "projection_checkpoint is not yet supported on the FoundationDB backend".into(),
+            )),
+        }
     }
 
     fn checkpoint_token(projection_name: &str, revision: u64) -> String {
         format!("{projection_name}@{revision}")
+    }
+
+    /// Stable namespace under which projections are scoped on the FDB backend.
+    ///
+    /// The `ProjectionProvider` methods do not receive a `SorNamespace` (and the
+    /// in-memory store keys projections only by `(name, key)`), so we derive a
+    /// deterministic namespace from `self.config.tenant_prefix` with a fixed
+    /// `sor_id`. persist/get/rebuild all share this namespace, so a record
+    /// written by one provider instance is recoverable by another instance built
+    /// from the same config.
+    #[cfg(feature = "foundationdb-real")]
+    fn projection_namespace(&self) -> SorNamespace {
+        SorNamespace {
+            tenant_id: self.config.tenant_prefix.clone(),
+            sor_id: "projections".into(),
+            environment_id: None,
+        }
     }
 
     fn metric_capabilities() -> Vec<ProviderCapability> {
@@ -468,103 +550,17 @@ impl FoundationDbProvider {
         &self,
         query: &ProviderMetricQuery,
     ) -> Result<Vec<MetricInputRow>, ProviderError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
-
-        match &query.source {
-            ProviderMetricSource::EventStream { stream_id } => {
-                let events = state.streams.get(stream_id).ok_or_else(|| {
-                    ProviderError::UnknownMetricSource(query.source.description())
-                })?;
-                Ok(events
-                    .iter()
-                    .map(|event| {
-                        let mut values = payload_object(&event.payload)?;
-                        values.insert(
-                            "stream_id".into(),
-                            serde_json::Value::String(event.stream_id.clone()),
-                        );
-                        values.insert(
-                            "event_type".into(),
-                            serde_json::Value::String(event.event_type.clone()),
-                        );
-                        values.insert(
-                            "revision".into(),
-                            serde_json::Value::Number(event.revision.into()),
-                        );
-                        Ok(MetricInputRow {
-                            values,
-                            stable_key: format!("event:{}:{:020}", event.stream_id, event.revision),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, ProviderError>>()?)
+        match &self.backend {
+            Backend::Memory(state) => {
+                let state = state
+                    .read()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+                metric_rows_for_query_mem(&state, query)
             }
-            ProviderMetricSource::CanonicalEntities {
-                namespace,
-                entity_type,
-            } => {
-                let mut rows = state
-                    .canonical_entities
-                    .values()
-                    .filter(|record| {
-                        record.namespace == *namespace && record.entity_type == *entity_type
-                    })
-                    .map(|record| {
-                        let mut values = value_object(&record.data_json).ok_or_else(|| {
-                            ProviderError::MetricExecutionFailed(format!(
-                                "canonical entity {} payload is not an object",
-                                record.entity_id
-                            ))
-                        })?;
-                        values.insert(
-                            "entity_id".into(),
-                            serde_json::Value::String(record.entity_id.clone()),
-                        );
-                        values.insert(
-                            "entity_type".into(),
-                            serde_json::Value::String(record.entity_type.clone()),
-                        );
-                        values.insert(
-                            "canonical_version".into(),
-                            serde_json::Value::String(record.canonical_version.clone()),
-                        );
-                        values.insert(
-                            "revision".into(),
-                            serde_json::Value::Number(record.revision.into()),
-                        );
-                        values.insert(
-                            "created_at".into(),
-                            serde_json::Value::String(record.created_at.clone()),
-                        );
-                        values.insert(
-                            "updated_at".into(),
-                            serde_json::Value::String(record.updated_at.clone()),
-                        );
-                        Ok(MetricInputRow {
-                            values,
-                            stable_key: format!(
-                                "canonical:{}:{}:{}:{:020}",
-                                namespace.production_key(),
-                                record.entity_type,
-                                record.entity_id,
-                                record.revision
-                            ),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, ProviderError>>()?;
-                rows.sort_by(|left, right| left.stable_key.cmp(&right.stable_key));
-                if rows.is_empty() {
-                    Err(ProviderError::UnknownMetricSource(
-                        query.source.description(),
-                    ))
-                } else {
-                    Ok(rows)
-                }
-            }
-            ProviderMetricSource::Fixture { name } => metric_fixture_rows(name)
-                .ok_or_else(|| ProviderError::UnknownMetricSource(query.source.description())),
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(_rt) => Err(ProviderError::Validation(
+                "metric_rows_for_query is not yet supported on the FoundationDB backend".into(),
+            )),
         }
     }
 
@@ -751,6 +747,105 @@ fn metric_fixture_rows(name: &str) -> Option<Vec<MetricInputRow>> {
             })
             .collect(),
     )
+}
+
+fn metric_rows_for_query_mem(
+    state: &InMemoryFoundationDb,
+    query: &ProviderMetricQuery,
+) -> Result<Vec<MetricInputRow>, ProviderError> {
+    match &query.source {
+        ProviderMetricSource::EventStream { stream_id } => {
+            let events = state.streams.get(stream_id).ok_or_else(|| {
+                ProviderError::UnknownMetricSource(query.source.description())
+            })?;
+            Ok(events
+                .iter()
+                .map(|event| {
+                    let mut values = payload_object(&event.payload)?;
+                    values.insert(
+                        "stream_id".into(),
+                        serde_json::Value::String(event.stream_id.clone()),
+                    );
+                    values.insert(
+                        "event_type".into(),
+                        serde_json::Value::String(event.event_type.clone()),
+                    );
+                    values.insert(
+                        "revision".into(),
+                        serde_json::Value::Number(event.revision.into()),
+                    );
+                    Ok(MetricInputRow {
+                        values,
+                        stable_key: format!("event:{}:{:020}", event.stream_id, event.revision),
+                    })
+                })
+                .collect::<Result<Vec<_>, ProviderError>>()?)
+        }
+        ProviderMetricSource::CanonicalEntities {
+            namespace,
+            entity_type,
+        } => {
+            let mut rows = state
+                .canonical_entities
+                .values()
+                .filter(|record| {
+                    record.namespace == *namespace && record.entity_type == *entity_type
+                })
+                .map(|record| {
+                    let mut values = value_object(&record.data_json).ok_or_else(|| {
+                        ProviderError::MetricExecutionFailed(format!(
+                            "canonical entity {} payload is not an object",
+                            record.entity_id
+                        ))
+                    })?;
+                    values.insert(
+                        "entity_id".into(),
+                        serde_json::Value::String(record.entity_id.clone()),
+                    );
+                    values.insert(
+                        "entity_type".into(),
+                        serde_json::Value::String(record.entity_type.clone()),
+                    );
+                    values.insert(
+                        "canonical_version".into(),
+                        serde_json::Value::String(record.canonical_version.clone()),
+                    );
+                    values.insert(
+                        "revision".into(),
+                        serde_json::Value::Number(record.revision.into()),
+                    );
+                    values.insert(
+                        "created_at".into(),
+                        serde_json::Value::String(record.created_at.clone()),
+                    );
+                    values.insert(
+                        "updated_at".into(),
+                        serde_json::Value::String(record.updated_at.clone()),
+                    );
+                    Ok(MetricInputRow {
+                        values,
+                        stable_key: format!(
+                            "canonical:{}:{}:{}:{:020}",
+                            namespace.production_key(),
+                            record.entity_type,
+                            record.entity_id,
+                            record.revision
+                        ),
+                    })
+                })
+                .collect::<Result<Vec<_>, ProviderError>>()?;
+            rows.sort_by(|left, right| left.stable_key.cmp(&right.stable_key));
+            if rows.is_empty() {
+                Err(ProviderError::UnknownMetricSource(
+                    query.source.description(),
+                ))
+            } else {
+                Ok(rows)
+            }
+        }
+        ProviderMetricSource::Fixture { name } => metric_fixture_rows(name)
+            .ok_or_else(|| ProviderError::UnknownMetricSource(query.source.description())),
+    }
 }
 
 fn ensure_metric_field(rows: &[MetricInputRow], field: &str) -> Result<(), ProviderError> {
@@ -1097,54 +1192,68 @@ impl ConfigValidator for FoundationDbProvider {
 
 impl EventStoreProvider for FoundationDbProvider {
     fn append_event(&self, request: AppendEventRequest) -> Result<EventRecord, ProviderError> {
-        let mut state = self
-            .state
-            .write()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+        match &self.backend {
+            Backend::Memory(state) => {
+                let mut state = state
+                    .write()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
 
-        let last_revision = state.last_stream_revision(&request.stream_id);
-        if let Some(expected) = request.expected_revision
-            && expected != last_revision
-        {
-            return Err(ProviderError::Validation(format!(
-                "expected revision {expected} did not match stream revision {last_revision}"
-            )));
+                let last_revision = state.last_stream_revision(&request.stream_id);
+                if let Some(expected) = request.expected_revision
+                    && expected != last_revision
+                {
+                    return Err(ProviderError::Validation(format!(
+                        "expected revision {expected} did not match stream revision {last_revision}"
+                    )));
+                }
+
+                let record = EventRecord {
+                    stream_id: request.stream_id.clone(),
+                    revision: last_revision + 1,
+                    event_type: request.event_type,
+                    payload: request.payload,
+                };
+
+                state
+                    .streams
+                    .entry(request.stream_id)
+                    .or_default()
+                    .push(record.clone());
+
+                Ok(record)
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(_rt) => Err(ProviderError::Validation(
+                "append_event is not yet supported on the FoundationDB backend".into(),
+            )),
         }
-
-        let record = EventRecord {
-            stream_id: request.stream_id.clone(),
-            revision: last_revision + 1,
-            event_type: request.event_type,
-            payload: request.payload,
-        };
-
-        state
-            .streams
-            .entry(request.stream_id)
-            .or_default()
-            .push(record.clone());
-
-        Ok(record)
     }
 
     fn read_event_stream(
         &self,
         request: EventStreamRequest,
     ) -> Result<Vec<EventRecord>, ProviderError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+        match &self.backend {
+            Backend::Memory(state) => {
+                let state = state
+                    .read()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
 
-        Ok(state
-            .streams
-            .get(&request.stream_id)
-            .into_iter()
-            .flat_map(|events| events.iter())
-            .filter(|event| event.revision >= request.from_revision)
-            .take(request.limit)
-            .cloned()
-            .collect())
+                Ok(state
+                    .streams
+                    .get(&request.stream_id)
+                    .into_iter()
+                    .flat_map(|events| events.iter())
+                    .filter(|event| event.revision >= request.from_revision)
+                    .take(request.limit)
+                    .cloned()
+                    .collect())
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(_rt) => Err(ProviderError::Validation(
+                "read_event_stream is not yet supported on the FoundationDB backend".into(),
+            )),
+        }
     }
 }
 
@@ -1153,34 +1262,42 @@ impl ProjectionProvider for FoundationDbProvider {
         &self,
         request: PersistProjectionRequest,
     ) -> Result<ProjectionRecord, ProviderError> {
-        let mut state = self
-            .state
-            .write()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+        match &self.backend {
+            Backend::Memory(state) => {
+                let mut state = state
+                    .write()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
 
-        let record = ProjectionRecord {
-            projection_name: request.projection_name.clone(),
-            projection_key: request.projection_key.clone(),
-            state_json: request.state_json,
-            last_applied_revision: request.last_applied_revision,
-        };
-        let checkpoint = ProjectionCheckpoint {
-            projection_name: request.projection_name.clone(),
-            checkpoint_token: Self::checkpoint_token(
-                &request.projection_name,
-                request.last_applied_revision,
-            ),
-        };
+                let record = ProjectionRecord {
+                    projection_name: request.projection_name.clone(),
+                    projection_key: request.projection_key.clone(),
+                    state_json: request.state_json,
+                    last_applied_revision: request.last_applied_revision,
+                };
+                let checkpoint = ProjectionCheckpoint {
+                    projection_name: request.projection_name.clone(),
+                    checkpoint_token: Self::checkpoint_token(
+                        &request.projection_name,
+                        request.last_applied_revision,
+                    ),
+                };
 
-        state.projections.insert(
-            (request.projection_name, request.projection_key),
-            ProjectionState {
-                record: record.clone(),
-                checkpoint,
-            },
-        );
+                state.projections.insert(
+                    (request.projection_name, request.projection_key),
+                    ProjectionState {
+                        record: record.clone(),
+                        checkpoint,
+                    },
+                );
 
-        Ok(record)
+                Ok(record)
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(rt) => {
+                let namespace = self.projection_namespace();
+                crate::fdb::txn::persist_projection_fdb(rt, &namespace, &request)
+            }
+        }
     }
 
     fn get_projection(
@@ -1188,112 +1305,157 @@ impl ProjectionProvider for FoundationDbProvider {
         projection_name: &str,
         projection_key: &str,
     ) -> Result<Option<ProjectionRecord>, ProviderError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+        match &self.backend {
+            Backend::Memory(state) => {
+                let state = state
+                    .read()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
 
-        Ok(state
-            .projections
-            .get(&(projection_name.into(), projection_key.into()))
-            .map(|projection| projection.record.clone()))
+                Ok(state
+                    .projections
+                    .get(&(projection_name.into(), projection_key.into()))
+                    .map(|projection| projection.record.clone()))
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(rt) => {
+                let namespace = self.projection_namespace();
+                crate::fdb::txn::get_projection_fdb(
+                    rt,
+                    &namespace,
+                    projection_name,
+                    projection_key,
+                )
+            }
+        }
     }
 
     fn rebuild_projection(
         &self,
         request: ProjectionRebuildRequest,
     ) -> Result<ProjectionCheckpoint, ProviderError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+        match &self.backend {
+            Backend::Memory(state) => {
+                let state = state
+                    .read()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
 
-        let target_revision = match request.from_checkpoint.as_deref() {
-            Some(token) => token
-                .rsplit_once('@')
-                .and_then(|(_, revision)| revision.parse::<u64>().ok())
-                .unwrap_or_else(|| state.highest_revision()),
-            None => state.highest_revision(),
-        };
+                let target_revision = match request.from_checkpoint.as_deref() {
+                    Some(token) => token
+                        .rsplit_once('@')
+                        .and_then(|(_, revision)| revision.parse::<u64>().ok())
+                        .unwrap_or_else(|| state.highest_revision()),
+                    None => state.highest_revision(),
+                };
 
-        Ok(ProjectionCheckpoint {
-            projection_name: request.projection_name.clone(),
-            checkpoint_token: Self::checkpoint_token(&request.projection_name, target_revision),
-        })
+                Ok(ProjectionCheckpoint {
+                    projection_name: request.projection_name.clone(),
+                    checkpoint_token: Self::checkpoint_token(
+                        &request.projection_name,
+                        target_revision,
+                    ),
+                })
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(rt) => {
+                let namespace = self.projection_namespace();
+                crate::fdb::txn::rebuild_projection_fdb(rt, &namespace, &request)
+            }
+        }
     }
 }
 
 impl EntityStoreProvider for FoundationDbProvider {
     fn upsert_entity(&self, entity: EntityRecord) -> Result<EntityRecord, ProviderError> {
-        let mut state = self
-            .state
-            .write()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+        match &self.backend {
+            Backend::Memory(state) => {
+                let mut state = state
+                    .write()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
 
-        state
-            .entities
-            .insert(Self::entity_key(&entity.entity), entity.clone());
-        Ok(entity)
+                state
+                    .entities
+                    .insert(Self::entity_key(&entity.entity), entity.clone());
+                Ok(entity)
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(_rt) => Err(ProviderError::Validation(
+                "upsert_entity is not yet supported on the FoundationDB backend".into(),
+            )),
+        }
     }
 
     fn get_entity(&self, entity: EntityRef) -> Result<Option<EntityRecord>, ProviderError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+        match &self.backend {
+            Backend::Memory(state) => {
+                let state = state
+                    .read()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
 
-        Ok(state.entities.get(&Self::entity_key(&entity)).cloned())
+                Ok(state.entities.get(&Self::entity_key(&entity)).cloned())
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(_rt) => Err(ProviderError::Validation(
+                "get_entity is not yet supported on the FoundationDB backend".into(),
+            )),
+        }
     }
 
     fn search_entities(
         &self,
         request: EntitySearchQuery,
     ) -> Result<Vec<EntityRecord>, ProviderError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+        match &self.backend {
+            Backend::Memory(state) => {
+                let state = state
+                    .read()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
 
-        let mut entities = state
-            .entities
-            .values()
-            .filter(|record| {
-                request.entity_types.is_empty()
-                    || request
-                        .entity_types
-                        .iter()
-                        .any(|entity_type| entity_type == &record.entity.entity_type)
-            })
-            .filter(|record| {
-                request.namespace.is_none()
-                    || record.entity.namespace.as_ref() == request.namespace.as_ref()
-            })
-            .filter(|record| {
-                request.query.as_ref().is_none_or(|query| {
-                    record.entity.entity_id.contains(query)
-                        || record
-                            .label
-                            .as_ref()
-                            .is_some_and(|label| label.contains(query))
-                        || record
-                            .metadata_json
-                            .as_ref()
-                            .is_some_and(|metadata| metadata.contains(query))
-                })
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+                let mut entities = state
+                    .entities
+                    .values()
+                    .filter(|record| {
+                        request.entity_types.is_empty()
+                            || request
+                                .entity_types
+                                .iter()
+                                .any(|entity_type| entity_type == &record.entity.entity_type)
+                    })
+                    .filter(|record| {
+                        request.namespace.is_none()
+                            || record.entity.namespace.as_ref() == request.namespace.as_ref()
+                    })
+                    .filter(|record| {
+                        request.query.as_ref().is_none_or(|query| {
+                            record.entity.entity_id.contains(query)
+                                || record
+                                    .label
+                                    .as_ref()
+                                    .is_some_and(|label| label.contains(query))
+                                || record
+                                    .metadata_json
+                                    .as_ref()
+                                    .is_some_and(|metadata| metadata.contains(query))
+                        })
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
 
-        entities.sort_by_key(|record| {
-            (
-                record.entity.entity_type.clone(),
-                record.entity.entity_id.clone(),
-                record.entity.namespace.clone(),
-                record.entity.version.clone(),
-            )
-        });
-        entities.truncate(request.limit);
-        Ok(entities)
+                entities.sort_by_key(|record| {
+                    (
+                        record.entity.entity_type.clone(),
+                        record.entity.entity_id.clone(),
+                        record.entity.namespace.clone(),
+                        record.entity.version.clone(),
+                    )
+                });
+                entities.truncate(request.limit);
+                Ok(entities)
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(_rt) => Err(ProviderError::Validation(
+                "search_entities is not yet supported on the FoundationDB backend".into(),
+            )),
+        }
     }
 }
 
@@ -1302,25 +1464,36 @@ impl CanonicalEntityStoreProvider for FoundationDbProvider {
         &self,
         record: CanonicalEntityRecord,
     ) -> Result<CanonicalEntityRecord, ProviderError> {
-        let mut state = self
-            .state
-            .write()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+        match &self.backend {
+            Backend::Memory(state) => {
+                let mut state = state
+                    .write()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
 
-        state.canonical_entities.insert(
-            Self::canonical_entity_key(&record.namespace, &record.entity_type, &record.entity_id),
-            record.clone(),
-        );
-        state.entities.insert(
-            Self::entity_key(&record.entity_ref()),
-            EntityRecord {
-                entity: record.entity_ref(),
-                label: None,
-                metadata_json: Some(record.data_json.to_string()),
-            },
-        );
+                state.canonical_entities.insert(
+                    Self::canonical_entity_key(
+                        &record.namespace,
+                        &record.entity_type,
+                        &record.entity_id,
+                    ),
+                    record.clone(),
+                );
+                state.entities.insert(
+                    Self::entity_key(&record.entity_ref()),
+                    EntityRecord {
+                        entity: record.entity_ref(),
+                        label: None,
+                        metadata_json: Some(record.data_json.to_string()),
+                    },
+                );
 
-        Ok(record)
+                Ok(record)
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(_rt) => Err(ProviderError::Validation(
+                "upsert_canonical_entity is not yet supported on the FoundationDB backend".into(),
+            )),
+        }
     }
 
     fn get_canonical_entity(
@@ -1329,19 +1502,26 @@ impl CanonicalEntityStoreProvider for FoundationDbProvider {
         entity_type: &str,
         entity_id: &str,
     ) -> Result<Option<CanonicalEntityRecord>, ProviderError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+        match &self.backend {
+            Backend::Memory(state) => {
+                let state = state
+                    .read()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
 
-        Ok(state
-            .canonical_entities
-            .get(&Self::canonical_entity_key(
-                &namespace,
-                entity_type,
-                entity_id,
-            ))
-            .cloned())
+                Ok(state
+                    .canonical_entities
+                    .get(&Self::canonical_entity_key(
+                        &namespace,
+                        entity_type,
+                        entity_id,
+                    ))
+                    .cloned())
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(rt) => {
+                crate::fdb::txn::get_canonical_entity_fdb(rt, &namespace, entity_type, entity_id)
+            }
+        }
     }
 }
 
@@ -1350,86 +1530,91 @@ impl CanonicalWriteProvider for FoundationDbProvider {
         &self,
         request: CanonicalWriteRequest,
     ) -> Result<CanonicalWriteResult, ProviderError> {
-        if request.event.namespace != request.entity.namespace {
-            return Err(ProviderError::Validation(
-                "event and entity namespaces must match".into(),
-            ));
-        }
-        if request.event.entity_ref.entity_type != request.entity.entity_type
-            || request.event.entity_ref.entity_id != request.entity.entity_id
-        {
-            return Err(ProviderError::Validation(
-                "event entity_ref must target the canonical entity".into(),
-            ));
-        }
+        match &self.backend {
+            Backend::Memory(state) => {
+                if request.event.namespace != request.entity.namespace {
+                    return Err(ProviderError::Validation(
+                        "event and entity namespaces must match".into(),
+                    ));
+                }
+                if request.event.entity_ref.entity_type != request.entity.entity_type
+                    || request.event.entity_ref.entity_id != request.entity.entity_id
+                {
+                    return Err(ProviderError::Validation(
+                        "event entity_ref must target the canonical entity".into(),
+                    ));
+                }
 
-        let mut state = self
-            .state
-            .write()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+                let mut state = state
+                    .write()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
 
-        if let Some(idempotency_key) = request.event.idempotency_key.as_deref() {
-            let key = Self::idempotency_key(&request.event.namespace, idempotency_key);
-            if state.idempotency_keys.contains_key(&key) {
-                return Err(ProviderError::Validation(format!(
-                    "idempotency key {idempotency_key} was already applied"
-                )));
+                if let Some(idempotency_key) = request.event.idempotency_key.as_deref() {
+                    let key = Self::idempotency_key(&request.event.namespace, idempotency_key);
+                    if state.idempotency_keys.contains_key(&key) {
+                        return Err(ProviderError::Validation(format!(
+                            "idempotency key {idempotency_key} was already applied"
+                        )));
+                    }
+                }
+
+                let last_sequence = state
+                    .canonical_streams
+                    .get(&request.event.stream_id)
+                    .and_then(|events| events.last())
+                    .map(|event| event.sequence)
+                    .unwrap_or(0);
+                if request.event.sequence != last_sequence + 1 {
+                    return Err(ProviderError::Validation(format!(
+                        "event sequence {} did not follow stream sequence {last_sequence}",
+                        request.event.sequence
+                    )));
+                }
+
+                state
+                    .canonical_streams
+                    .entry(request.event.stream_id.clone())
+                    .or_default()
+                    .push(request.event.clone());
+                state.canonical_entities.insert(
+                    Self::canonical_entity_key(
+                        &request.entity.namespace,
+                        &request.entity.entity_type,
+                        &request.entity.entity_id,
+                    ),
+                    request.entity.clone(),
+                );
+                state.entities.insert(
+                    Self::entity_key(&request.entity.entity_ref()),
+                    EntityRecord {
+                        entity: request.entity.entity_ref(),
+                        label: None,
+                        metadata_json: Some(request.entity.data_json.to_string()),
+                    },
+                );
+                for relationship in request.relationships.iter().cloned() {
+                    Self::upsert_relationship_in_state(&mut state, relationship);
+                }
+                for link in request.entity_links.iter().cloned() {
+                    Self::upsert_evidence_link_in_state(&mut state, link);
+                }
+                if let Some(idempotency_key) = request.event.idempotency_key.as_deref() {
+                    state.idempotency_keys.insert(
+                        Self::idempotency_key(&request.event.namespace, idempotency_key),
+                        request.event.event_id.clone(),
+                    );
+                }
+
+                Ok(CanonicalWriteResult {
+                    event: request.event,
+                    entity: request.entity,
+                    relationships_written: request.relationships.len(),
+                    entity_links_written: request.entity_links.len(),
+                })
             }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(rt) => crate::fdb::txn::apply_canonical_write_fdb(rt, &request),
         }
-
-        let last_sequence = state
-            .canonical_streams
-            .get(&request.event.stream_id)
-            .and_then(|events| events.last())
-            .map(|event| event.sequence)
-            .unwrap_or(0);
-        if request.event.sequence != last_sequence + 1 {
-            return Err(ProviderError::Validation(format!(
-                "event sequence {} did not follow stream sequence {last_sequence}",
-                request.event.sequence
-            )));
-        }
-
-        state
-            .canonical_streams
-            .entry(request.event.stream_id.clone())
-            .or_default()
-            .push(request.event.clone());
-        state.canonical_entities.insert(
-            Self::canonical_entity_key(
-                &request.entity.namespace,
-                &request.entity.entity_type,
-                &request.entity.entity_id,
-            ),
-            request.entity.clone(),
-        );
-        state.entities.insert(
-            Self::entity_key(&request.entity.entity_ref()),
-            EntityRecord {
-                entity: request.entity.entity_ref(),
-                label: None,
-                metadata_json: Some(request.entity.data_json.to_string()),
-            },
-        );
-        for relationship in request.relationships.iter().cloned() {
-            Self::upsert_relationship_in_state(&mut state, relationship);
-        }
-        for link in request.entity_links.iter().cloned() {
-            Self::upsert_evidence_link_in_state(&mut state, link);
-        }
-        if let Some(idempotency_key) = request.event.idempotency_key.as_deref() {
-            state.idempotency_keys.insert(
-                Self::idempotency_key(&request.event.namespace, idempotency_key),
-                request.event.event_id.clone(),
-            );
-        }
-
-        Ok(CanonicalWriteResult {
-            event: request.event,
-            entity: request.entity,
-            relationships_written: request.relationships.len(),
-            entity_links_written: request.entity_links.len(),
-        })
     }
 }
 
@@ -1438,150 +1623,176 @@ impl sorla_provider_core::OntologyGraphProvider for FoundationDbProvider {
         &self,
         request: RelationshipQuery,
     ) -> Result<Vec<RelationshipInstance>, ProviderError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
-        let root_keys = request
-            .root_entities
-            .iter()
-            .map(Self::entity_key)
-            .collect::<Vec<_>>();
-        let mut relationships = Self::sorted_relationships(
-            state
-                .relationships
-                .iter()
-                .filter(|relationship| {
-                    request
-                        .relationship_type
-                        .as_ref()
-                        .is_none_or(|relationship_type| {
-                            relationship.relationship.relationship_type == *relationship_type
+        match &self.backend {
+            Backend::Memory(state) => {
+                let state = state
+                    .read()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+                let root_keys = request
+                    .root_entities
+                    .iter()
+                    .map(Self::entity_key)
+                    .collect::<Vec<_>>();
+                let mut relationships = Self::sorted_relationships(
+                    state
+                        .relationships
+                        .iter()
+                        .filter(|relationship| {
+                            request
+                                .relationship_type
+                                .as_ref()
+                                .is_none_or(|relationship_type| {
+                                    relationship.relationship.relationship_type == *relationship_type
+                                })
+                                && (root_keys.is_empty()
+                                    || match request.direction {
+                                        RelationshipDirection::Outgoing => root_keys.contains(
+                                            &Self::entity_key(&relationship.relationship.from),
+                                        ),
+                                        RelationshipDirection::Incoming => root_keys.contains(
+                                            &Self::entity_key(&relationship.relationship.to),
+                                        ),
+                                        RelationshipDirection::Both => {
+                                            root_keys.contains(&Self::entity_key(
+                                                &relationship.relationship.from,
+                                            )) || root_keys.contains(&Self::entity_key(
+                                                &relationship.relationship.to,
+                                            ))
+                                        }
+                                    })
                         })
-                        && (root_keys.is_empty()
-                            || match request.direction {
-                                RelationshipDirection::Outgoing => root_keys
-                                    .contains(&Self::entity_key(&relationship.relationship.from)),
-                                RelationshipDirection::Incoming => root_keys
-                                    .contains(&Self::entity_key(&relationship.relationship.to)),
-                                RelationshipDirection::Both => {
-                                    root_keys.contains(&Self::entity_key(
-                                        &relationship.relationship.from,
-                                    )) || root_keys
-                                        .contains(&Self::entity_key(&relationship.relationship.to))
-                                }
-                            })
-                })
-                .cloned(),
-        );
-        relationships.truncate(request.limit);
-        Ok(relationships)
+                        .cloned(),
+                );
+                relationships.truncate(request.limit);
+                Ok(relationships)
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(_rt) => Err(ProviderError::Validation(
+                "query_relationships is not yet supported on the FoundationDB backend".into(),
+            )),
+        }
     }
 
     fn find_paths(&self, request: PathQuery) -> Result<Vec<OntologyPath>, ProviderError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
-        let relationships = Self::sorted_relationships(state.relationships.clone());
-        let target_key = Self::entity_key(&request.to);
-        let mut paths = Vec::new();
-        let mut queue = vec![(request.from.clone(), Vec::<OntologyPathStep>::new())];
+        match &self.backend {
+            Backend::Memory(state) => {
+                let state = state
+                    .read()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+                let relationships = Self::sorted_relationships(state.relationships.clone());
+                let target_key = Self::entity_key(&request.to);
+                let mut paths = Vec::new();
+                let mut queue = vec![(request.from.clone(), Vec::<OntologyPathStep>::new())];
 
-        while let Some((current, steps)) = queue.pop() {
-            if paths.len() >= request.limit {
-                break;
-            }
-            if steps.len() >= usize::from(request.max_depth) {
-                continue;
-            }
+                while let Some((current, steps)) = queue.pop() {
+                    if paths.len() >= request.limit {
+                        break;
+                    }
+                    if steps.len() >= usize::from(request.max_depth) {
+                        continue;
+                    }
 
-            let current_key = Self::entity_key(&current);
-            for relationship in relationships.iter().filter(|relationship| {
-                Self::entity_key(&relationship.relationship.from) == current_key
-                    && (request.relationship_types.is_empty()
-                        || request.relationship_types.iter().any(|relationship_type| {
-                            relationship_type == &relationship.relationship.relationship_type
-                        }))
-            }) {
-                let next = relationship.relationship.to.clone();
-                let next_key = Self::entity_key(&next);
-                if steps.iter().any(|step| {
-                    Self::entity_key(&step.relationship.from) == next_key
-                        || Self::entity_key(&step.relationship.to) == next_key
-                }) || Self::entity_key(&request.from) == next_key
-                {
-                    continue;
+                    let current_key = Self::entity_key(&current);
+                    for relationship in relationships.iter().filter(|relationship| {
+                        Self::entity_key(&relationship.relationship.from) == current_key
+                            && (request.relationship_types.is_empty()
+                                || request.relationship_types.iter().any(|relationship_type| {
+                                    relationship_type == &relationship.relationship.relationship_type
+                                }))
+                    }) {
+                        let next = relationship.relationship.to.clone();
+                        let next_key = Self::entity_key(&next);
+                        if steps.iter().any(|step| {
+                            Self::entity_key(&step.relationship.from) == next_key
+                                || Self::entity_key(&step.relationship.to) == next_key
+                        }) || Self::entity_key(&request.from) == next_key
+                        {
+                            continue;
+                        }
+
+                        let mut next_steps = steps.clone();
+                        next_steps.push(OntologyPathStep {
+                            relationship: relationship.relationship.clone(),
+                            direction: RelationshipDirection::Outgoing,
+                        });
+
+                        if next_key == target_key {
+                            paths.push(OntologyPath {
+                                start: request.from.clone(),
+                                end: request.to.clone(),
+                                steps: next_steps,
+                            });
+                        } else {
+                            queue.insert(0, (next, next_steps));
+                        }
+                    }
                 }
 
-                let mut next_steps = steps.clone();
-                next_steps.push(OntologyPathStep {
-                    relationship: relationship.relationship.clone(),
-                    direction: RelationshipDirection::Outgoing,
+                paths.sort_by_key(|path| {
+                    path.steps
+                        .iter()
+                        .map(|step| {
+                            Self::relationship_key(&RelationshipInstance {
+                                relationship: step.relationship.clone(),
+                                metadata_json: None,
+                                provenance: None,
+                            })
+                        })
+                        .collect::<Vec<_>>()
                 });
-
-                if next_key == target_key {
-                    paths.push(OntologyPath {
-                        start: request.from.clone(),
-                        end: request.to.clone(),
-                        steps: next_steps,
-                    });
-                } else {
-                    queue.insert(0, (next, next_steps));
-                }
+                Ok(paths)
             }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(_rt) => Err(ProviderError::Validation(
+                "find_paths is not yet supported on the FoundationDB backend".into(),
+            )),
         }
-
-        paths.sort_by_key(|path| {
-            path.steps
-                .iter()
-                .map(|step| {
-                    Self::relationship_key(&RelationshipInstance {
-                        relationship: step.relationship.clone(),
-                        metadata_json: None,
-                        provenance: None,
-                    })
-                })
-                .collect::<Vec<_>>()
-        });
-        Ok(paths)
     }
 }
 
 impl EntityLinkProvider for FoundationDbProvider {
     fn link_entities(&self, request: EntityLinkRequest) -> Result<Vec<EntityLink>, ProviderError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
-        let mut links = state
-            .evidence_links
-            .values()
-            .flat_map(|items| items.iter())
-            .filter(|link| {
-                request
-                    .source_ref
-                    .as_ref()
-                    .is_none_or(|source_ref| &link.source_ref == source_ref)
-                    && request
-                        .evidence_id
-                        .as_ref()
-                        .is_none_or(|evidence_id| link.evidence_id.as_ref() == Some(evidence_id))
-                    && (request.candidate_types.is_empty()
-                        || request
-                            .candidate_types
-                            .iter()
-                            .any(|candidate_type| candidate_type == &link.entity.entity_type))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        links.sort_by(|left, right| {
-            Self::entity_key(&left.entity)
-                .cmp(&Self::entity_key(&right.entity))
-                .then_with(|| left.source_ref.cmp(&right.source_ref))
-                .then_with(|| left.evidence_id.cmp(&right.evidence_id))
-        });
-        Ok(links)
+        match &self.backend {
+            Backend::Memory(state) => {
+                let state = state
+                    .read()
+                    .map_err(|_| ProviderError::Validation("provider state lock poisoned".into()))?;
+                let mut links = state
+                    .evidence_links
+                    .values()
+                    .flat_map(|items| items.iter())
+                    .filter(|link| {
+                        request
+                            .source_ref
+                            .as_ref()
+                            .is_none_or(|source_ref| &link.source_ref == source_ref)
+                            && request
+                                .evidence_id
+                                .as_ref()
+                                .is_none_or(|evidence_id| {
+                                    link.evidence_id.as_ref() == Some(evidence_id)
+                                })
+                            && (request.candidate_types.is_empty()
+                                || request
+                                    .candidate_types
+                                    .iter()
+                                    .any(|candidate_type| candidate_type == &link.entity.entity_type))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                links.sort_by(|left, right| {
+                    Self::entity_key(&left.entity)
+                        .cmp(&Self::entity_key(&right.entity))
+                        .then_with(|| left.source_ref.cmp(&right.source_ref))
+                        .then_with(|| left.evidence_id.cmp(&right.evidence_id))
+                });
+                Ok(links)
+            }
+            #[cfg(feature = "foundationdb-real")]
+            Backend::Fdb(_rt) => Err(ProviderError::Validation(
+                "link_entities is not yet supported on the FoundationDB backend".into(),
+            )),
+        }
     }
 }
 
@@ -2621,6 +2832,27 @@ mod tests {
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0].steps.len(), 3);
         assert!(too_shallow.is_empty());
+    }
+
+    #[test]
+    fn backend_dispatch_in_memory_path_applies_canonical_write() {
+        // Confirm that the default (in-memory) backend dispatches correctly via
+        // for_tests() and that apply_canonical_write succeeds end-to-end.
+        let provider = FoundationDbProvider::for_tests();
+        let ns = namespace();
+        let entity = canonical_entity(1);
+        let event = canonical_event(1, None);
+        let result = provider
+            .apply_canonical_write(CanonicalWriteRequest {
+                event,
+                entity,
+                relationships: vec![],
+                entity_links: vec![],
+            })
+            .expect("in-memory backend dispatch should succeed");
+        assert_eq!(result.relationships_written, 0);
+        assert_eq!(result.entity_links_written, 0);
+        assert_eq!(result.entity.namespace, ns);
     }
 
     #[test]

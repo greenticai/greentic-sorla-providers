@@ -78,3 +78,49 @@ jobs:
         run: cargo test -p ${{ matrix.package }} --all-features
       - name: cargo build provider
         run: cargo build -p ${{ matrix.package }} --all-features
+
+  fdb-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          profile: minimal
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Install FoundationDB client
+        run: |
+          curl -sSL -o /tmp/fdb-clients.deb \
+            https://github.com/apple/foundationdb/releases/download/7.3.27/foundationdb-clients_7.3.27-1_amd64.deb
+          sudo dpkg -i /tmp/fdb-clients.deb
+      - name: Start FoundationDB (single-node)
+        run: |
+          docker run -d --name fdb --network host foundationdb/foundationdb:7.3.27
+          # Retry configure until the freshly-started server accepts it (handles cold start).
+          configured=0
+          for i in $(seq 1 30); do
+            out="$(docker exec fdb fdbcli --exec "configure new single memory" 2>&1 || true)"
+            if echo "$out" | grep -qiE "Database created|already"; then
+              configured=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$configured" -ne 1 ]; then
+            echo "FoundationDB did not become configurable in time"; docker logs fdb || true; exit 1
+          fi
+          docker exec fdb fdbcli --exec "status minimal"
+          docker exec fdb cat /var/fdb/fdb.cluster > "$RUNNER_TEMP/fdb.cluster"
+      - name: Run foundationdb-real tests
+        env:
+          FDB_CLUSTER_FILE: ${{ runner.temp }}/fdb.cluster
+        run: cargo test -p provider-foundationdb --features foundationdb-real
