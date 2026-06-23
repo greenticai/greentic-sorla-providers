@@ -10,8 +10,9 @@ use std::fmt;
 
 use foundationdb::{FdbBindingError, RangeOption};
 use sorla_provider_core::{
-    CanonicalWriteRequest, CanonicalWriteResult, EntityRef, ProviderError, SorEventRecord,
-    SorNamespace,
+    CanonicalEntityRecord, CanonicalWriteRequest, CanonicalWriteResult, EntityRef,
+    PersistProjectionRequest, ProjectionCheckpoint, ProjectionRebuildRequest, ProjectionRecord,
+    ProviderError, SorEventRecord, SorNamespace,
 };
 
 use super::codec::{decode_value, encode_value};
@@ -252,5 +253,130 @@ pub fn read_event_stream_fdb(
         events.sort_by_key(|event| event.sequence);
         events.truncate(limit);
         Ok(events)
+    })
+}
+
+/// Read a canonical entity projection from the real cluster.
+///
+/// Returns `None` when no value is stored under the entity key. Uses a single
+/// read transaction; the stored bytes are decoded via the CBOR codec.
+pub fn get_canonical_entity_fdb(
+    rt: &FdbRuntime,
+    namespace: &SorNamespace,
+    entity_type: &str,
+    entity_id: &str,
+) -> Result<Option<CanonicalEntityRecord>, ProviderError> {
+    let db = rt.database();
+    let ks = FdbKeyspace::new(namespace);
+    let key = ks.canonical_entity_key(entity_type, entity_id);
+
+    rt.block_on(async {
+        let trx = db
+            .create_trx()
+            .map_err(|err| ProviderError::Validation(format!("fdb create_trx failed: {err}")))?;
+        match trx.get(&key, false).await {
+            Ok(Some(bytes)) => decode_value::<CanonicalEntityRecord>(&bytes).map(Some),
+            Ok(None) => Ok(None),
+            Err(err) => Err(ProviderError::Validation(format!("fdb get failed: {err}"))),
+        }
+    })
+}
+
+/// Persist a projection record and its checkpoint marker atomically.
+///
+/// In one `Database::run` transaction this writes the `ProjectionRecord` under
+/// the projection key and the `last_applied_revision` under the checkpoint key,
+/// so `rebuild_projection_fdb` can later recover the revision after a restart.
+pub fn persist_projection_fdb(
+    rt: &FdbRuntime,
+    namespace: &SorNamespace,
+    request: &PersistProjectionRequest,
+) -> Result<ProjectionRecord, ProviderError> {
+    let record = ProjectionRecord {
+        projection_name: request.projection_name.clone(),
+        projection_key: request.projection_key.clone(),
+        state_json: request.state_json.clone(),
+        last_applied_revision: request.last_applied_revision,
+    };
+
+    let db = rt.database();
+    rt.block_on(async {
+        db.run(|trx, _maybe_committed| {
+            // Clone owned inputs into the closure: `run` may retry it.
+            let namespace = namespace.clone();
+            let record = record.clone();
+            async move {
+                let ks = FdbKeyspace::new(&namespace);
+                let record_bytes =
+                    encode_value(&record).map_err(|err| custom_error(CodecError(err)))?;
+                trx.set(
+                    &ks.projection_key(&record.projection_name, &record.projection_key),
+                    &record_bytes,
+                );
+                trx.set(
+                    &ks.checkpoint_key(&record.projection_name),
+                    &encode_u64(record.last_applied_revision),
+                );
+                Ok(())
+            }
+        })
+        .await
+    })
+    .map_err(map_binding_error)?;
+
+    Ok(record)
+}
+
+/// Read a projection record from the real cluster, or `None` if absent.
+pub fn get_projection_fdb(
+    rt: &FdbRuntime,
+    namespace: &SorNamespace,
+    projection_name: &str,
+    projection_key: &str,
+) -> Result<Option<ProjectionRecord>, ProviderError> {
+    let db = rt.database();
+    let ks = FdbKeyspace::new(namespace);
+    let key = ks.projection_key(projection_name, projection_key);
+
+    rt.block_on(async {
+        let trx = db
+            .create_trx()
+            .map_err(|err| ProviderError::Validation(format!("fdb create_trx failed: {err}")))?;
+        match trx.get(&key, false).await {
+            Ok(Some(bytes)) => decode_value::<ProjectionRecord>(&bytes).map(Some),
+            Ok(None) => Ok(None),
+            Err(err) => Err(ProviderError::Validation(format!("fdb get failed: {err}"))),
+        }
+    })
+}
+
+/// Rebuild a projection by recovering its persisted checkpoint revision.
+///
+/// Reads the `last_applied_revision` stored under the checkpoint key (0 when
+/// absent) and returns a `ProjectionCheckpoint` whose token carries the
+/// revision as `{name}@{revision}`.
+pub fn rebuild_projection_fdb(
+    rt: &FdbRuntime,
+    namespace: &SorNamespace,
+    request: &ProjectionRebuildRequest,
+) -> Result<ProjectionCheckpoint, ProviderError> {
+    let db = rt.database();
+    let ks = FdbKeyspace::new(namespace);
+    let key = ks.checkpoint_key(&request.projection_name);
+
+    let revision = rt.block_on(async {
+        let trx = db
+            .create_trx()
+            .map_err(|err| ProviderError::Validation(format!("fdb create_trx failed: {err}")))?;
+        match trx.get(&key, false).await {
+            Ok(Some(bytes)) => Ok(decode_u64(&bytes)),
+            Ok(None) => Ok(0),
+            Err(err) => Err(ProviderError::Validation(format!("fdb get failed: {err}"))),
+        }
+    })?;
+
+    Ok(ProjectionCheckpoint {
+        projection_name: request.projection_name.clone(),
+        checkpoint_token: format!("{}@{}", request.projection_name, revision),
     })
 }

@@ -511,6 +511,23 @@ impl FoundationDbProvider {
         format!("{projection_name}@{revision}")
     }
 
+    /// Stable namespace under which projections are scoped on the FDB backend.
+    ///
+    /// The `ProjectionProvider` methods do not receive a `SorNamespace` (and the
+    /// in-memory store keys projections only by `(name, key)`), so we derive a
+    /// deterministic namespace from `self.config.tenant_prefix` with a fixed
+    /// `sor_id`. persist/get/rebuild all share this namespace, so a record
+    /// written by one provider instance is recoverable by another instance built
+    /// from the same config.
+    #[cfg(feature = "foundationdb-real")]
+    fn projection_namespace(&self) -> SorNamespace {
+        SorNamespace {
+            tenant_id: self.config.tenant_prefix.clone(),
+            sor_id: "projections".into(),
+            environment_id: None,
+        }
+    }
+
     fn metric_capabilities() -> Vec<ProviderCapability> {
         vec![
             ProviderCapability::MetricAggregateCount,
@@ -1276,9 +1293,10 @@ impl ProjectionProvider for FoundationDbProvider {
                 Ok(record)
             }
             #[cfg(feature = "foundationdb-real")]
-            Backend::Fdb(_rt) => Err(ProviderError::Validation(
-                "persist_projection is not yet supported on the FoundationDB backend".into(),
-            )),
+            Backend::Fdb(rt) => {
+                let namespace = self.projection_namespace();
+                crate::fdb::txn::persist_projection_fdb(rt, &namespace, &request)
+            }
         }
     }
 
@@ -1299,9 +1317,15 @@ impl ProjectionProvider for FoundationDbProvider {
                     .map(|projection| projection.record.clone()))
             }
             #[cfg(feature = "foundationdb-real")]
-            Backend::Fdb(_rt) => Err(ProviderError::Validation(
-                "get_projection is not yet supported on the FoundationDB backend".into(),
-            )),
+            Backend::Fdb(rt) => {
+                let namespace = self.projection_namespace();
+                crate::fdb::txn::get_projection_fdb(
+                    rt,
+                    &namespace,
+                    projection_name,
+                    projection_key,
+                )
+            }
         }
     }
 
@@ -1332,9 +1356,10 @@ impl ProjectionProvider for FoundationDbProvider {
                 })
             }
             #[cfg(feature = "foundationdb-real")]
-            Backend::Fdb(_rt) => Err(ProviderError::Validation(
-                "rebuild_projection is not yet supported on the FoundationDB backend".into(),
-            )),
+            Backend::Fdb(rt) => {
+                let namespace = self.projection_namespace();
+                crate::fdb::txn::rebuild_projection_fdb(rt, &namespace, &request)
+            }
         }
     }
 }
@@ -1493,9 +1518,9 @@ impl CanonicalEntityStoreProvider for FoundationDbProvider {
                     .cloned())
             }
             #[cfg(feature = "foundationdb-real")]
-            Backend::Fdb(_rt) => Err(ProviderError::Validation(
-                "get_canonical_entity is not yet supported on the FoundationDB backend".into(),
-            )),
+            Backend::Fdb(rt) => {
+                crate::fdb::txn::get_canonical_entity_fdb(rt, &namespace, entity_type, entity_id)
+            }
         }
     }
 }
