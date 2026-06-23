@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+#[allow(dead_code)]
+mod fdb;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 
