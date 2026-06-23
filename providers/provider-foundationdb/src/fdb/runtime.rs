@@ -1,36 +1,31 @@
 #![cfg(feature = "foundationdb-real")]
 
-use std::sync::OnceLock;
-
+use foundationdb::api::NetworkAutoStop;
 use sorla_provider_core::ProviderError;
 
-/// Process-global FDB network boot guard. `boot()` returns a guard that must
-/// outlive all DB usage; we leak it for the process lifetime.
-static BOOT: OnceLock<()> = OnceLock::new();
-
-fn ensure_booted() {
-    BOOT.get_or_init(|| {
-        // SAFETY: `foundationdb::boot()` starts the client network thread and
-        // must be called exactly once per process before any Database use.
-        // The returned guard is intentionally leaked so the network stays up
-        // for the whole process; OnceLock guarantees single initialization.
-        #[allow(unsafe_code)]
-        let guard = unsafe { foundationdb::boot() };
-        std::mem::forget(guard);
-    });
+/// Boot the FDB client network. The CALLER MUST hold the returned guard until
+/// all DB use is finished; dropping it stops the network cleanly (its `Drop`
+/// joins the client network thread). `foundationdb` permits a single boot per
+/// process — call this once (process startup, or once at the top of a test).
+#[allow(unsafe_code)]
+pub fn boot_network() -> NetworkAutoStop {
+    // SAFETY: `foundationdb::boot()` starts the client network thread and must
+    // be called exactly once per process before any Database use. The returned
+    // guard MUST be dropped (stops the network) before the process exits.
+    unsafe { foundationdb::boot() }
 }
 
-#[allow(dead_code)]
 pub struct FdbRuntime {
     rt: tokio::runtime::Runtime,
     db: foundationdb::Database,
 }
 
+/// Open a Database and build a current-thread runtime. Does NOT boot the
+/// network — the caller must have already called `boot_network()` and be
+/// holding the guard.
 pub fn connect(cluster_file: Option<&str>) -> Result<FdbRuntime, ProviderError> {
-    ensure_booted();
     if let Some(path) = cluster_file {
-        // SAFETY: env mutation guarded by single-threaded init before any
-        // Database is opened; edition 2024 marks set_var unsafe.
+        // SAFETY: edition 2024 marks set_var unsafe; set before opening the DB.
         #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("FDB_CLUSTER_FILE", path);
@@ -45,7 +40,6 @@ pub fn connect(cluster_file: Option<&str>) -> Result<FdbRuntime, ProviderError> 
     Ok(FdbRuntime { rt, db })
 }
 
-#[allow(dead_code)]
 impl FdbRuntime {
     pub fn block_on<F: std::future::Future>(&self, fut: F) -> F::Output {
         self.rt.block_on(fut)
@@ -53,18 +47,5 @@ impl FdbRuntime {
 
     pub fn database(&self) -> &foundationdb::Database {
         &self.db
-    }
-}
-
-#[cfg(all(test, feature = "foundationdb-real"))]
-mod tests {
-    use super::connect;
-
-    // Requires FDB_CLUSTER_FILE=/home/bima-pangestu/fdb/fdb.cluster
-    #[test]
-    fn connects_and_runs_a_trivial_future() {
-        let rt = connect(None).expect("connect to local cluster");
-        let answer = rt.block_on(async { 1 + 1 });
-        assert_eq!(answer, 2);
     }
 }

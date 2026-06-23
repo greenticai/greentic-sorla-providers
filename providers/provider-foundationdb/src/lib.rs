@@ -4,6 +4,9 @@
 #[allow(dead_code)]
 mod fdb;
 
+#[cfg(feature = "foundationdb-real")]
+pub use fdb::runtime::{boot_network, connect, FdbRuntime};
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 
