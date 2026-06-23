@@ -1,4 +1,5 @@
-#![forbid(unsafe_code)]
+#![cfg_attr(not(feature = "foundationdb-real"), forbid(unsafe_code))]
+#![cfg_attr(feature = "foundationdb-real", deny(unsafe_code))]
 
 #[allow(dead_code)]
 mod fdb;
