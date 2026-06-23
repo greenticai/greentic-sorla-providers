@@ -174,10 +174,12 @@ if [[ "$run_package_checks" -eq 1 ]]; then
     echo "Packaging checks completed."
 fi
 
-print_step "FoundationDB gated tests (opt-in)"
-if [ -n "${FDB_CLUSTER_FILE:-}" ] && [ -f "${FDB_CLUSTER_FILE}" ]; then
-    echo "FDB_CLUSTER_FILE=${FDB_CLUSTER_FILE} present — running foundationdb-real tests"
-    cargo test -p provider-foundationdb --features foundationdb-real
-else
-    echo "FDB_CLUSTER_FILE unset or file missing — skipping foundationdb-real tests"
+if [[ "$run_full" -eq 1 ]]; then
+    print_step "FoundationDB gated tests (opt-in)"
+    if [ -n "${FDB_CLUSTER_FILE:-}" ] && [ -f "${FDB_CLUSTER_FILE}" ]; then
+        echo "FDB_CLUSTER_FILE=${FDB_CLUSTER_FILE} present — running foundationdb-real tests"
+        cargo test -p provider-foundationdb --features foundationdb-real
+    else
+        echo "FDB_CLUSTER_FILE unset or file missing — skipping foundationdb-real tests"
+    fi
 fi

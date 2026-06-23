@@ -105,11 +105,20 @@ jobs:
       - name: Start FoundationDB (single-node)
         run: |
           docker run -d --name fdb --network host foundationdb/foundationdb:7.3.27
+          # Retry configure until the freshly-started server accepts it (handles cold start).
+          configured=0
           for i in $(seq 1 30); do
-            if docker exec fdb fdbcli --exec "status minimal" 2>/dev/null | grep -q "available\|Unable"; then break; fi
-            sleep 1
+            out="$(docker exec fdb fdbcli --exec "configure new single memory" 2>&1 || true)"
+            if echo "$out" | grep -qiE "Database created|already"; then
+              configured=1
+              break
+            fi
+            sleep 2
           done
-          docker exec fdb fdbcli --exec "configure new single memory"
+          if [ "$configured" -ne 1 ]; then
+            echo "FoundationDB did not become configurable in time"; docker logs fdb || true; exit 1
+          fi
+          docker exec fdb fdbcli --exec "status minimal"
           docker exec fdb cat /var/fdb/fdb.cluster > "$RUNNER_TEMP/fdb.cluster"
       - name: Run foundationdb-real tests
         env:
