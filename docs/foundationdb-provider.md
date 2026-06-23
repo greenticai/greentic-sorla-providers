@@ -102,7 +102,7 @@ Two public functions manage the FDB network lifecycle:
 - `boot_network()` — starts the FDB client network thread and returns a `NetworkAutoStop` guard. The guard **must** be held for the lifetime of all DB use; dropping it shuts the network thread down cleanly. `boot_network()` must be called exactly once per process, before any `Database` handle is opened. Callers own this responsibility (process startup or the top of a test file).
 - `connect(cluster_file: Option<&str>)` — opens a `Database` and builds a current-thread Tokio runtime without booting the network. The caller must already hold a live `NetworkAutoStop` guard before calling `connect()`.
 
-If `connect()` fails (e.g. cluster unreachable), `FoundationDbProvider::new` falls back silently to the in-memory backend so metadata and config-validate calls still work; the degraded state is observable through `health()`.
+If `connect()` fails (e.g. cluster unreachable), `FoundationDbProvider::new` falls back silently to the in-memory backend so metadata and config-validate calls still work. Note: this fallback is NOT currently surfaced through `health()`, which unconditionally returns `HealthState::Ready` regardless of which backend is active; detect a misconfigured or unreachable cluster via startup logs and the cluster file path instead.
 
 ### Atomic canonical write
 
@@ -165,7 +165,7 @@ The following provider methods return `ProviderError::Validation("... not yet su
 - `query_relationships` / `find_paths` (ontology graph traversal)
 - `link_entities` (entity linking query)
 - `projection_checkpoint` (direct checkpoint accessor)
-- `query_metric` / `metric_rows_for_query` (metrics)
+- `query_metric` (metrics; delegates internally to the private `metric_rows_for_query` helper, which is also unimplemented on the FDB variant)
 
 ### CI
 
