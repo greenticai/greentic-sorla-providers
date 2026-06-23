@@ -45,6 +45,9 @@ mod tests {
     #[test]
     fn decode_rejects_corrupt_bytes() {
         let err = decode_value::<CanonicalEntityRecord>(&[0xff, 0x00, 0x13]).unwrap_err();
-        assert!(matches!(err, sorla_provider_core::ProviderError::Validation(_)));
+        assert!(matches!(
+            err,
+            sorla_provider_core::ProviderError::Validation(_)
+        ));
     }
 }

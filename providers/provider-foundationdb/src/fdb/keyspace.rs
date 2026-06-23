@@ -71,6 +71,21 @@ impl FdbKeyspace {
         self.at(&format!("/idempotency/{idem}"))
     }
 
+    /// Key for an entity link, scoped by the linked entity token, the source
+    /// reference, and the match kind so distinct links to the same entity do
+    /// not collide while re-linking the same (entity, source, match) is
+    /// idempotent.
+    pub fn entity_link_key(
+        &self,
+        entity_token: &str,
+        source_ref: &str,
+        match_kind: &str,
+    ) -> Vec<u8> {
+        self.at(&format!(
+            "/links/{entity_token}\u{1f}{source_ref}\u{1f}{match_kind}"
+        ))
+    }
+
     pub fn projection_key(&self, name: &str, key: &str) -> Vec<u8> {
         self.at(&format!("/projections/{name}\u{1f}{key}"))
     }

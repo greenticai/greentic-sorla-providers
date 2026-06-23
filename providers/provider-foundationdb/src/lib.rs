@@ -5,7 +5,10 @@
 mod fdb;
 
 #[cfg(feature = "foundationdb-real")]
-pub use fdb::runtime::{boot_network, connect, FdbRuntime};
+pub use fdb::runtime::{FdbRuntime, boot_network, connect};
+
+#[cfg(feature = "foundationdb-real")]
+pub use fdb::txn::{apply_canonical_write_fdb, read_event_stream_fdb};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
