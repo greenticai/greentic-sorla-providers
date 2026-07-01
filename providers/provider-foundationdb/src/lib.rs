@@ -1672,7 +1672,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        FoundationDbConfig, FoundationDbProvider, catalog_entry, encode_key_segment, pack_manifest,
+        FoundationDbConfig, FoundationDbProvider, PROVIDER_ID, PROVIDER_VERSION, catalog_entry,
+        encode_key_segment, pack_manifest,
     };
     use sorla_provider_core::{
         AppendEventRequest, CanonicalEntityRecord, CanonicalEntityStoreProvider,
@@ -1687,6 +1688,7 @@ mod tests {
         RelationshipDirection, RelationshipInstance, RelationshipQuery, RelationshipRef,
         SorEventRecord, SorNamespace,
     };
+    use sorla_provider_pack::provider_runtime_oci_reference;
 
     fn entity(entity_type: &str, entity_id: &str) -> EntityRef {
         EntityRef {
@@ -1813,9 +1815,10 @@ mod tests {
                 .contains(&ProviderCapability::MetricDimensionGroupBy)
         );
         assert_eq!(manifest.provider_version, env!("CARGO_PKG_VERSION"));
+        let expected_oci = provider_runtime_oci_reference(PROVIDER_ID, PROVIDER_VERSION);
         assert_eq!(
             manifest.oci_reference.as_deref(),
-            Some("oci://ghcr.io/greenticai/sorla-providers/foundationdb:0.1.8")
+            Some(expected_oci.as_str())
         );
         assert_eq!(
             provider.pack_emission().artifact_ref,
