@@ -486,11 +486,12 @@ pub fn catalog_entry() -> ProviderCatalogEntry {
 
 #[cfg(test)]
 mod tests {
-    use super::{RagMockProvider, catalog_entry, pack_manifest};
+    use super::{PROVIDER_ID, PROVIDER_VERSION, RagMockProvider, catalog_entry, pack_manifest};
     use sorla_provider_core::{
         ConfigValidator, EntityRef, EvidenceProvider, EvidenceQuery, EvidenceQueryFilter,
         OntologyScope, ProviderCapability, ProviderHealth, ProviderMetadataSource,
     };
+    use sorla_provider_pack::provider_runtime_oci_reference;
 
     fn base_query() -> EvidenceQuery {
         EvidenceQuery {
@@ -542,9 +543,10 @@ mod tests {
 
         assert_eq!(manifest.provider_id, entry.provider_id);
         assert_eq!(manifest.provider_version, env!("CARGO_PKG_VERSION"));
+        let expected_oci = provider_runtime_oci_reference(PROVIDER_ID, PROVIDER_VERSION);
         assert_eq!(
             manifest.oci_reference.as_deref(),
-            Some("oci://ghcr.io/greenticai/sorla-providers/rag-mock:0.1.4")
+            Some(expected_oci.as_str())
         );
         assert_eq!(
             provider.pack_emission().artifact_ref,
