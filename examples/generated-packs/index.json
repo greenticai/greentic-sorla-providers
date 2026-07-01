@@ -1,12 +1,12 @@
 [
   {
     "provider_id": "greentic.sorla.provider.foundationdb",
-    "provider_version": "1.1.0-dev.0",
+    "provider_version": "1.1.0",
     "provider_slug": "foundationdb",
     "manifest_path": "examples/generated-packs/greentic-sorla-provider-foundationdb/manifest.json",
     "artifact_path": "examples/generated-packs/greentic-sorla-provider-foundationdb/greentic-sorla-provider-foundationdb.gtpack.json",
     "schema_path": "examples/generated-packs/greentic-sorla-provider-foundationdb/schemas/provider-config.schema.json",
-    "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:1.1.0-dev.0"
+    "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:1.1.0"
   },
   {
     "provider_id": "greentic.sorla.provider.rag-mock",

@@ -3,7 +3,7 @@
   "manifest": {
     "pack_format_version": "sorla-provider-pack/v1",
     "provider_id": "greentic.sorla.provider.foundationdb",
-    "provider_version": "1.1.0-dev.0",
+    "provider_version": "1.1.0",
     "provider_kind": "event-store",
     "capabilities": [
       "event-append",
@@ -53,7 +53,7 @@
         "component_id": "foundationdb-runtime",
         "kind": "service",
         "entrypoint": "provider-foundationdb",
-        "artifact_uri": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:1.1.0-dev.0"
+        "artifact_uri": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:1.1.0"
       }
     ],
     "sdk_binding": {
@@ -68,7 +68,7 @@
       "path": "schemas/provider-config.schema.json",
       "schema_json": "{\"type\":\"object\",\"required\":[\"cluster_file\",\"tenant_prefix\"],\"properties\":{\"cluster_file\":{\"type\":\"string\"},\"tenant_prefix\":{\"type\":\"string\"}},\"additionalProperties\":false}"
     },
-    "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:1.1.0-dev.0",
+    "oci_reference": "oci://ghcr.io/greenticai/sorla-providers/foundationdb:1.1.0",
     "display": {
       "title": "FoundationDB",
       "summary": "FoundationDB provider manifest for SoRLa"
